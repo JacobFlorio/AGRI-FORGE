@@ -1,0 +1,11 @@
+gray_leaf_spot
+northern_corn_leaf_blight
+common_rust
+sudden_death_syndrome
+frogeye_leaf_spot
+nitrogen_deficiency
+water_stress
+weed_pressure
+stand_gap
+ponding
+healthy

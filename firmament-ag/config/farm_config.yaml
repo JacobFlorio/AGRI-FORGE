@@ -1,0 +1,217 @@
+# ═══════════════════════════════════════════════════════════════
+# Florio Industries — Firmament Agricultural Configuration
+# ═══════════════════════════════════════════════════════════════
+# This file defines your farm zones, crop types, detection classes,
+# environmental thresholds, and mission parameters.
+#
+# Edit this file for each farm you operate at.
+# The zone_mission_planner reads this to generate flight plans.
+# The ag_perception node reads this for detection thresholds.
+# ═══════════════════════════════════════════════════════════════
+
+farm:
+  name: "Demo Farm — Marion County"
+  operator: "Jacob Florio"
+  location:
+    center_lat: 40.5886
+    center_lon: -83.1282
+    elevation_ft: 920
+
+# ── Field Definitions ───────────────────────────────────────────
+# Each field has a name, crop type, and GPS boundary polygon.
+# Boundaries are [lat, lon] pairs defining the polygon vertices.
+# The mission planner generates waypoint grids within these boundaries.
+fields:
+  - id: "field_a"
+    name: "North Field"
+    crop: "corn"
+    planting_date: "2026-04-15"
+    variety: "Pioneer P1093AM"
+    acreage: 120
+    boundary:
+      - [40.5920, -83.1340]
+      - [40.5920, -83.1220]
+      - [40.5870, -83.1220]
+      - [40.5870, -83.1340]
+    zones:
+      - id: "field_a_nw"
+        name: "NW Quarter"
+        boundary:
+          - [40.5920, -83.1340]
+          - [40.5920, -83.1280]
+          - [40.5895, -83.1280]
+          - [40.5895, -83.1340]
+      - id: "field_a_ne"
+        name: "NE Quarter"
+        boundary:
+          - [40.5920, -83.1280]
+          - [40.5920, -83.1220]
+          - [40.5895, -83.1220]
+          - [40.5895, -83.1280]
+      - id: "field_a_sw"
+        name: "SW Quarter"
+        boundary:
+          - [40.5895, -83.1340]
+          - [40.5895, -83.1280]
+          - [40.5870, -83.1280]
+          - [40.5870, -83.1340]
+      - id: "field_a_se"
+        name: "SE Quarter"
+        boundary:
+          - [40.5895, -83.1280]
+          - [40.5895, -83.1220]
+          - [40.5870, -83.1220]
+          - [40.5870, -83.1280]
+
+  - id: "field_b"
+    name: "South Field"
+    crop: "soybeans"
+    planting_date: "2026-05-01"
+    variety: "Asgrow AG36X6"
+    acreage: 80
+    boundary:
+      - [40.5860, -83.1320]
+      - [40.5860, -83.1200]
+      - [40.5820, -83.1200]
+      - [40.5820, -83.1320]
+    zones:
+      - id: "field_b_north"
+        name: "North Half"
+        boundary:
+          - [40.5860, -83.1320]
+          - [40.5860, -83.1200]
+          - [40.5840, -83.1200]
+          - [40.5840, -83.1320]
+      - id: "field_b_south"
+        name: "South Half"
+        boundary:
+          - [40.5840, -83.1320]
+          - [40.5840, -83.1200]
+          - [40.5820, -83.1200]
+          - [40.5820, -83.1320]
+
+# ── Mission Parameters ──────────────────────────────────────────
+mission:
+  default_altitude_m: 25        # AGL — good balance of coverage vs detail
+  overlap_percent: 70           # Image overlap for photogrammetry
+  sidelap_percent: 65           # Side overlap
+  speed_m_s: 5                  # Ground speed during scanning
+  camera_trigger_interval_m: 8  # Distance between photo captures
+  return_to_launch: true
+  low_battery_return_pct: 25
+  max_wind_m_s: 10              # Abort threshold
+
+# ── Agricultural Detection Classes ──────────────────────────────
+# These define what the YOLO model and VLM look for in ag mode.
+# severity_threshold: confidence above which it triggers an alert.
+detection:
+  classes:
+    - name: "disease_fungal"
+      display: "Fungal Disease"
+      severity: "high"
+      confidence_threshold: 0.45
+      description: "Gray leaf spot, northern corn leaf blight, rust, anthracnose"
+    - name: "disease_bacterial"
+      display: "Bacterial Infection"
+      severity: "high"
+      confidence_threshold: 0.45
+      description: "Goss's wilt, bacterial leaf streak"
+    - name: "pest_damage"
+      display: "Pest Damage"
+      severity: "high"
+      confidence_threshold: 0.40
+      description: "Insect feeding damage, boring, defoliation"
+    - name: "nutrient_deficiency"
+      display: "Nutrient Deficiency"
+      severity: "medium"
+      confidence_threshold: 0.40
+      description: "Nitrogen chlorosis, potassium deficiency, sulfur deficiency"
+    - name: "water_stress"
+      display: "Water Stress"
+      severity: "medium"
+      confidence_threshold: 0.40
+      description: "Drought stress, wilting, leaf rolling"
+    - name: "weed_pressure"
+      display: "Weed Pressure"
+      severity: "medium"
+      confidence_threshold: 0.50
+      description: "Weed patches, resistant weed populations"
+    - name: "stand_gap"
+      display: "Stand Gap / Emergence Issue"
+      severity: "low"
+      confidence_threshold: 0.55
+      description: "Missing plants, poor emergence, replant candidates"
+    - name: "lodging"
+      display: "Crop Lodging"
+      severity: "medium"
+      confidence_threshold: 0.50
+      description: "Flattened or leaning crop from wind/rain"
+    - name: "drainage_issue"
+      display: "Drainage / Ponding"
+      severity: "medium"
+      confidence_threshold: 0.45
+      description: "Standing water, saturated soil, tile drain failure"
+    - name: "equipment_damage"
+      display: "Equipment Damage"
+      severity: "low"
+      confidence_threshold: 0.55
+      description: "Compaction tracks, sprayer skips, planter misses"
+    - name: "healthy"
+      display: "Healthy Crop"
+      severity: "none"
+      confidence_threshold: 0.60
+      description: "Normal healthy vegetation — used for training baseline"
+
+# ── Environmental Alert Thresholds ──────────────────────────────
+# BME280 sensor data triggers alerts when conditions favor disease.
+environmental:
+  humidity:
+    fungal_risk_threshold: 85      # % RH — high fungal disease risk
+    moderate_risk_threshold: 70    # % RH — moderate risk
+  temperature:
+    heat_stress_c: 35              # Celsius
+    frost_risk_c: 2                # Celsius
+  pressure:
+    storm_drop_hpa: 5              # hPa drop in 1 hour = storm incoming
+
+# ── VLM Prompt Templates (Cosmos Reason 2) ──────────────────────
+# These replace the security-focused prompts with ag-specific ones.
+vlm:
+  system_prompt: |
+    You are an agricultural crop health analyst examining aerial drone imagery
+    of farm fields in central Ohio. Your task is to assess crop health based on
+    visual indicators. Describe what you observe in plain language a farmer
+    would understand. Focus on:
+    - Color abnormalities (yellowing, browning, unusual patterns)
+    - Spatial patterns (clustered, linear, scattered, edge effects)
+    - Severity assessment (percentage of visible area affected)
+    - Likely cause (disease, pest, nutrient, water, mechanical)
+    - Recommended action (scout on foot, apply treatment, monitor)
+    Be specific and actionable. Farmers need to know WHERE and WHAT, not vague
+    assessments. If you are uncertain, say so — do not guess.
+
+  query_template: |
+    Analyze this aerial image of a {crop_type} field captured at {altitude}m altitude.
+    Environmental conditions: {temperature}°C, {humidity}% RH, {pressure} hPa.
+    Previous detections in this area: {prior_detections}.
+    The object detector flagged: {detection_class} with {confidence}% confidence.
+    What do you assess? Provide: observation, likely cause, severity (1-10), and
+    recommended farmer action.
+
+# ── Photogrammetry Settings ─────────────────────────────────────
+# For OpenDroneMap processing on your workstation PC.
+photogrammetry:
+  odm_options:
+    dsm: true                     # Generate digital surface model
+    dtm: true                     # Generate digital terrain model  
+    orthophoto_resolution: 2.0    # cm/pixel
+    mesh_octree_depth: 12         # 3D mesh detail level
+    use_3dmesh: true              # Generate 3D textured mesh
+    tiles: true                   # Generate 3D tiles for web viewer
+    cog: true                     # Cloud-optimized GeoTIFF output
+    pc_quality: "high"            # Point cloud quality
+  output_formats:
+    - "orthophoto"                # 2D map
+    - "dsm"                       # Elevation model
+    - "3d_tiles"                  # Web-viewable 3D model
+    - "point_cloud"               # LAS point cloud

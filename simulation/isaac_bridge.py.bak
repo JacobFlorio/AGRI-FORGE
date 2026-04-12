@@ -1,0 +1,380 @@
+"""
+simulation/isaac_bridge.py — WSL ↔ Windows Isaac Sim bridge
+============================================================
+Manages the lifecycle of NVIDIA Isaac Sim running on the Windows host
+from WSL Ubuntu.  Provides:
+
+  1. Start/stop Isaac Sim (headless or GUI) via powershell.exe
+  2. ROS2 topic bridge for camera frames, clock, TF
+  3. Shared-folder data exchange (WSL ↔ Windows mnt paths)
+  4. VRAM monitoring to stay within 14 GB budget
+
+Architecture:
+  WSL (this code)  ←ROS2 DDS→  Windows Isaac Sim (RTX renderer)
+                   ←/mnt/c/...→ shared filesystem for USD + outputs
+
+Isaac Sim is launched on Windows via `powershell.exe` so the RTX GPU
+renders natively.  ROS2 Humble/Jazzy bridge runs in WSL and subscribes
+to Isaac's published camera topics over localhost DDS.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import signal
+import subprocess
+import time
+from pathlib import Path, PureWindowsPath
+from typing import Optional
+
+import numpy as np
+
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+
+# ── Path translation helpers ────────────────────────────────────────
+def wsl_to_win(wsl_path: str) -> str:
+    """Convert a WSL path to its Windows equivalent.
+
+    /mnt/c/foo → C:\\foo
+    /home/user/bar → \\\\wsl$\\Ubuntu\\home\\user\\bar
+    """
+    p = str(wsl_path)
+    if p.startswith("/mnt/") and len(p) > 5:
+        drive = p[5].upper()
+        rest = p[6:].replace("/", "\\")
+        return f"{drive}:{rest}"
+    # UNC path for native WSL filesystem
+    try:
+        result = subprocess.run(
+            ["wslpath", "-w", p], capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return p
+
+
+def win_to_wsl(win_path: str) -> str:
+    """Convert a Windows path to WSL mount path.
+
+    C:\\isaacsim → /mnt/c/isaacsim
+    """
+    try:
+        result = subprocess.run(
+            ["wslpath", "-u", win_path], capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    # Manual fallback
+    p = win_path.replace("\\", "/")
+    if len(p) >= 2 and p[1] == ":":
+        drive = p[0].lower()
+        return f"/mnt/{drive}{p[2:]}"
+    return win_path
+
+
+class VRAMGuard:
+    """Monitor GPU VRAM and enforce budget."""
+
+    def __init__(self, max_gb: float = 14.0):
+        self.max_gb = max_gb
+
+    def get_usage(self) -> dict:
+        """Return current VRAM usage in GB."""
+        if not HAS_TORCH or not torch.cuda.is_available():
+            return {"used_gb": 0, "free_gb": 0, "total_gb": 0}
+        free, total = torch.cuda.mem_get_info()
+        used = total - free
+        return {
+            "used_gb": round(used / (1024**3), 2),
+            "free_gb": round(free / (1024**3), 2),
+            "total_gb": round(total / (1024**3), 2),
+        }
+
+    def check(self, required_gb: float = 2.0) -> bool:
+        """Return True if enough VRAM is available."""
+        usage = self.get_usage()
+        if usage["total_gb"] == 0:
+            return True  # No GPU info — can't check, proceed
+        available = min(usage["free_gb"], self.max_gb - usage["used_gb"])
+        return available >= required_gb
+
+    def wait_until_available(self, required_gb: float = 2.0,
+                             timeout_s: float = 120, poll_s: float = 5) -> bool:
+        """Block until enough VRAM is free or timeout."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.check(required_gb):
+                return True
+            time.sleep(poll_s)
+        return False
+
+
+class IsaacBridge:
+    """Manage Isaac Sim process on Windows host from WSL."""
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        isaac_cfg = cfg.get("isaac_sim", {})
+
+        # Windows-side Isaac Sim install path
+        self.isaac_win_path = isaac_cfg.get("install_path", r"C:\isaacsim")
+        self.isaac_wsl_path = win_to_wsl(self.isaac_win_path)
+
+        # Shared data directory (Windows path accessible from both sides)
+        self.shared_dir_win = isaac_cfg.get(
+            "shared_dir", r"C:\agri_forge_isaac_data"
+        )
+        self.shared_dir_wsl = win_to_wsl(self.shared_dir_win)
+
+        self.headless = isaac_cfg.get("headless", True)
+        self.ros2_enabled = isaac_cfg.get("ros2_bridge", True)
+        self.ros2_domain = isaac_cfg.get("ros2_domain_id", 0)
+
+        self.vram_guard = VRAMGuard(
+            max_gb=cfg.get("hardware", {}).get("max_vram_gb", 14.0)
+        )
+
+        # Process handles
+        self._isaac_proc: Optional[subprocess.Popen] = None
+        self._bridge_proc: Optional[subprocess.Popen] = None
+
+    # ── Shared directory setup ──────────────────────────────────────
+    def setup_shared_dir(self) -> Path:
+        """Create the shared data exchange directory."""
+        shared = Path(self.shared_dir_wsl)
+        for sub in ["usd_scenes", "renders", "labels", "depth", "segmentation"]:
+            (shared / sub).mkdir(parents=True, exist_ok=True)
+        print(f"[IsaacBridge] Shared dir: {shared}")
+        print(f"[IsaacBridge] Windows:    {self.shared_dir_win}")
+        return shared
+
+    # ── Isaac Sim lifecycle ─────────────────────────────────────────
+    def _build_isaac_cmd(self, usd_path: Optional[str] = None) -> list[str]:
+        """Build the powershell command to launch Isaac Sim on Windows."""
+        # Isaac Sim 4.x uses isaac-sim.bat or python.bat
+        isaac_exe = f"{self.isaac_win_path}\\isaac-sim.bat"
+
+        args = []
+        if self.headless:
+            args.append("--headless")
+        if usd_path:
+            args.extend(["--usd-path", usd_path])
+
+        # Enable ROS2 bridge extension
+        if self.ros2_enabled:
+            args.extend([
+                "--ext-folder", f"{self.isaac_win_path}\\exts",
+                "--enable", "omni.isaac.ros2_bridge",
+            ])
+
+        cmd_str = f'& "{isaac_exe}" ' + " ".join(args)
+
+        return [
+            "powershell.exe", "-NoProfile", "-Command", cmd_str,
+        ]
+
+    def _build_isaac_python_cmd(self, script_win_path: str) -> list[str]:
+        """Build command to run a Python script inside Isaac Sim's Python."""
+        python_bat = f"{self.isaac_win_path}\\python.bat"
+        return [
+            "powershell.exe", "-NoProfile", "-Command",
+            f'& "{python_bat}" "{script_win_path}"',
+        ]
+
+    def start(self, usd_path: Optional[str] = None) -> bool:
+        """Launch Isaac Sim on Windows host.
+
+        Returns True if Isaac appears to start successfully.
+        """
+        # VRAM safety check
+        if not self.vram_guard.check(required_gb=4.0):
+            print("[IsaacBridge] WARNING: Low VRAM. Isaac Sim needs ~4-8 GB.")
+            usage = self.vram_guard.get_usage()
+            print(f"[IsaacBridge] Current: {usage['used_gb']}/{usage['total_gb']} GB used")
+            if not self.vram_guard.wait_until_available(4.0, timeout_s=30):
+                print("[IsaacBridge] Proceeding anyway — Isaac renders on Windows GPU")
+
+        # Verify Isaac Sim exists
+        isaac_check = Path(self.isaac_wsl_path)
+        if not isaac_check.exists():
+            print(f"[IsaacBridge] ERROR: Isaac Sim not found at {self.isaac_wsl_path}")
+            print(f"[IsaacBridge] Expected Windows path: {self.isaac_win_path}")
+            return False
+
+        print(f"[IsaacBridge] Starting Isaac Sim ({'headless' if self.headless else 'GUI'})...")
+        cmd = self._build_isaac_cmd(usd_path)
+
+        try:
+            self._isaac_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                # Don't block WSL — Isaac runs on Windows side
+            )
+            print(f"[IsaacBridge] Isaac Sim launched (PID proxy: {self._isaac_proc.pid})")
+        except Exception as e:
+            print(f"[IsaacBridge] Failed to launch Isaac Sim: {e}")
+            return False
+
+        # Wait for Isaac to initialize (it's slow)
+        print("[IsaacBridge] Waiting for Isaac Sim startup (30-90s typical)...")
+        time.sleep(5)
+
+        # Check it hasn't crashed immediately
+        if self._isaac_proc.poll() is not None:
+            stderr = self._isaac_proc.stderr.read().decode() if self._isaac_proc.stderr else ""
+            print(f"[IsaacBridge] Isaac Sim exited immediately: {stderr[:500]}")
+            return False
+
+        return True
+
+    def run_script(self, script_wsl_path: str, timeout: int = 300) -> tuple[int, str]:
+        """Run a Python script inside Isaac Sim's embedded Python on Windows.
+
+        This is the primary rendering interface: we write a USD scene script,
+        execute it via Isaac's python.bat, and collect outputs from shared dir.
+        """
+        script_win = wsl_to_win(script_wsl_path)
+        cmd = self._build_isaac_python_cmd(script_win)
+
+        print(f"[IsaacBridge] Running script: {Path(script_wsl_path).name}")
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout,
+            )
+            return result.returncode, result.stdout + result.stderr
+        except subprocess.TimeoutExpired:
+            return -1, f"Script timed out after {timeout}s"
+        except Exception as e:
+            return -1, str(e)
+
+    def stop(self) -> None:
+        """Stop Isaac Sim and bridge processes."""
+        if self._isaac_proc and self._isaac_proc.poll() is None:
+            print("[IsaacBridge] Stopping Isaac Sim...")
+            try:
+                # Send CTRL+C via powershell
+                subprocess.run(
+                    ["powershell.exe", "-Command",
+                     f"Stop-Process -Id {self._isaac_proc.pid} -Force"],
+                    timeout=10, capture_output=True,
+                )
+            except Exception:
+                self._isaac_proc.terminate()
+            self._isaac_proc = None
+
+        if self._bridge_proc and self._bridge_proc.poll() is None:
+            self._bridge_proc.terminate()
+            self._bridge_proc = None
+
+        print("[IsaacBridge] Stopped")
+
+    @property
+    def is_running(self) -> bool:
+        return self._isaac_proc is not None and self._isaac_proc.poll() is None
+
+    # ── ROS2 bridge ─────────────────────────────────────────────────
+    def start_ros2_bridge(self) -> bool:
+        """Start ROS2 DDS bridge for camera topics.
+
+        Isaac Sim's ROS2 bridge extension publishes directly via DDS,
+        so WSL just needs a matching ROS2 domain and FastDDS config
+        that allows localhost multicast between WSL and Windows.
+        """
+        if not self.ros2_enabled:
+            return False
+
+        # Set ROS2 domain ID to match Isaac
+        os.environ["ROS_DOMAIN_ID"] = str(self.ros2_domain)
+
+        # Configure FastDDS for WSL ↔ Windows localhost communication
+        fastdds_xml = self._generate_fastdds_profile()
+        os.environ["FASTRTPS_DEFAULT_PROFILES_FILE"] = str(fastdds_xml)
+
+        print(f"[IsaacBridge] ROS2 bridge configured (domain={self.ros2_domain})")
+        return True
+
+    def _generate_fastdds_profile(self) -> Path:
+        """Generate FastDDS XML profile for WSL ↔ Windows DDS discovery."""
+        profile_dir = Path(self.shared_dir_wsl) / ".ros2"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        xml_path = profile_dir / "fastdds_wsl_bridge.xml"
+
+        xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <profiles>
+        <participant profile_name="agri_forge_participant" is_default_profile="true">
+            <domainId>{self.ros2_domain}</domainId>
+            <rtps>
+                <builtin>
+                    <discovery_config>
+                        <leaseDuration>
+                            <sec>10</sec>
+                        </leaseDuration>
+                    </discovery_config>
+                    <metatrafficUnicastLocatorList>
+                        <locator>
+                            <udpv4>
+                                <address>127.0.0.1</address>
+                            </udpv4>
+                        </locator>
+                    </metatrafficUnicastLocatorList>
+                    <initialPeersList>
+                        <locator>
+                            <udpv4>
+                                <address>127.0.0.1</address>
+                            </udpv4>
+                        </locator>
+                    </initialPeersList>
+                </builtin>
+                <useBuiltinTransports>true</useBuiltinTransports>
+            </rtps>
+        </participant>
+    </profiles>
+</dds>
+"""
+        xml_path.write_text(xml_content)
+        return xml_path
+
+    # ── Convenience: collect rendered frames ────────────────────────
+    def collect_renders(self, output_dir: Path) -> dict:
+        """Copy rendered images + labels from shared dir to AGRI-FORGE output."""
+        shared = Path(self.shared_dir_wsl)
+        counts = {"rgb": 0, "depth": 0, "segmentation": 0, "labels": 0}
+
+        for subdir, key in [
+            ("renders", "rgb"),
+            ("depth", "depth"),
+            ("segmentation", "segmentation"),
+            ("labels", "labels"),
+        ]:
+            src = shared / subdir
+            dst = output_dir / subdir
+            dst.mkdir(parents=True, exist_ok=True)
+            if src.exists():
+                for f in src.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, dst / f.name)
+                        counts[key] += 1
+
+        return counts
+
+    def clean_shared_dir(self) -> None:
+        """Remove temporary render data from shared directory."""
+        shared = Path(self.shared_dir_wsl)
+        for subdir in ["renders", "depth", "segmentation", "labels", "usd_scenes"]:
+            d = shared / subdir
+            if d.exists():
+                for f in d.iterdir():
+                    if f.is_file():
+                        f.unlink()

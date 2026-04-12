@@ -1,0 +1,35 @@
+# ── AGRI-FORGE requirements ──────────────────────────────────────────
+# Core
+torch>=2.2.0
+torchvision>=0.17.0
+numpy>=1.24.0
+Pillow>=10.0.0
+PyYAML>=6.0
+requests>=2.31.0
+
+# YOLOv8 detection
+ultralytics>=8.1.0
+
+# Cosmos-Reason2 + transformers
+transformers>=4.40.0
+accelerate>=0.27.0
+safetensors>=0.4.0
+
+# Unsloth LoRA (fast on RTX 50-series)
+unsloth>=2024.1
+
+# Dataset catalog
+lancedb>=0.5.0
+pyarrow>=15.0.0
+
+# JARVIS memory integration
+mem0ai>=0.1.0
+
+# Kaggle data downloads
+kaggle>=1.6.0
+
+# Testing
+pytest>=8.0.0
+
+# Optional: MATLAB Engine API (install separately)
+# matlabengine>=24.1

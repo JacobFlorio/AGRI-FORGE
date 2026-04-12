@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Data (large files)
+datasets/
+models/
+export/builds/
+*.pt
+*.engine
+*.safetensors
+*.tif
+*.onnx
+
+# Reports (regenerable)
+reports/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MATLAB
+*.asv
+*.mlx
+
+# LanceDB
+*.lancedb/
+
+# Windows Zone.Identifier metadata
+*:Zone.Identifier
+*.Identifier

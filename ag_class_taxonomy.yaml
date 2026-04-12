@@ -1,0 +1,195 @@
+# ═══════════════════════════════════════════════════════════════
+# Florio Industries — Unified Agricultural Class Taxonomy
+# ═══════════════════════════════════════════════════════════════
+#
+# This file is the SINGLE SOURCE OF TRUTH for detection classes.
+# It maps between three systems:
+#   - AGRI-FORGE synthetic data generator (class_id in YOLO .txt labels)
+#   - YOLOv8 inference on Jetson (model output class index)
+#   - farm_config.yaml / ag dashboard (display names and thresholds)
+#
+# WHEN YOU UPDATE CLASSES:
+#   1. Edit this file
+#   2. Update AGRI-FORGE class list to match
+#   3. Update farm_config.yaml detection.classes to match
+#   4. Retrain YOLO
+#   5. Deploy new weights to Jetson
+#
+# ═══════════════════════════════════════════════════════════════
+
+# ── TIER 1: Ohio Corn Diseases ──────────────────────────────────
+# These are the highest-priority classes for your Marion County pilots.
+# Corn is Ohio's #1 crop. These diseases are common and visually distinct
+# from aerial perspective, making them good YOLO targets.
+
+0:
+  name: gray_leaf_spot
+  display: "Gray Leaf Spot"
+  crop: corn
+  severity: high
+  visual_signature: "Rectangular gray-tan lesions running parallel to leaf veins"
+  aerial_signature: "Patches of gray-dulled canopy, often starting in lower canopy"
+  confidence_threshold: 0.40
+  agri_forge_description: "Corn leaves with elongated rectangular gray-brown lesions parallel to veins. Lesions 1-3 inches long. Often on lower leaves first. Background is green corn canopy."
+
+1:
+  name: northern_corn_leaf_blight
+  display: "Northern Corn Leaf Blight"
+  crop: corn
+  severity: high
+  visual_signature: "Long cigar-shaped gray-green lesions, 1-6 inches"
+  aerial_signature: "Irregular gray-green patches in canopy, distinct from healthy green"
+  confidence_threshold: 0.40
+  agri_forge_description: "Corn leaves with large cigar-shaped gray-green to tan lesions. Lesions longer than gray leaf spot, sometimes with dark borders. Canopy shows mottled appearance from above."
+
+2:
+  name: common_rust
+  display: "Common Rust"
+  crop: corn
+  severity: high
+  visual_signature: "Small circular to elongate red-brown pustules on both leaf surfaces"
+  aerial_signature: "Reddish-brown tint to canopy sections, distinct from healthy green"
+  confidence_threshold: 0.45
+  agri_forge_description: "Corn leaves with small raised reddish-brown circular pustules scattered across leaf surface. From aerial view, affected area has distinctive rust-colored tint against green canopy."
+
+# ── TIER 2: Ohio Soybean Diseases ───────────────────────────────
+# Soybeans are Ohio's #2 crop. Your South Field demo is soybeans.
+
+3:
+  name: sudden_death_syndrome
+  display: "Sudden Death Syndrome"
+  crop: soybeans
+  severity: high
+  visual_signature: "Interveinal chlorosis and necrosis, leaves remain attached"
+  aerial_signature: "Yellow-brown patches in field, often in low/wet areas"
+  confidence_threshold: 0.40
+  agri_forge_description: "Soybean plants with yellow leaves showing brown necrotic tissue between veins while veins remain green. Dead brown leaves still attached to stems. Patches of affected plants surrounded by green healthy plants."
+
+4:
+  name: frogeye_leaf_spot
+  display: "Frogeye Leaf Spot"
+  crop: soybeans
+  severity: medium
+  visual_signature: "Circular spots with gray centers and dark reddish-brown borders"
+  aerial_signature: "Scattered gray-spotted appearance in canopy"
+  confidence_threshold: 0.45
+  agri_forge_description: "Soybean leaves with small circular spots having light gray centers surrounded by dark reddish-brown borders. Multiple spots per leaf. Canopy appears speckled from above."
+
+# ── TIER 3: Cross-Crop Stress Classes ──────────────────────────
+# These apply to both corn and soybeans and are visually distinct
+# from aerial perspective without needing crop-specific training.
+
+5:
+  name: nitrogen_deficiency
+  display: "Nitrogen Deficiency"
+  crop: both
+  severity: medium
+  visual_signature: "V-shaped yellowing from leaf tip, lower leaves first"
+  aerial_signature: "Pale yellow-green zones, often streaks following application patterns"
+  confidence_threshold: 0.40
+  agri_forge_description: "Crop plants showing yellowing of lower leaves with V-shaped chlorosis pattern starting from leaf tips. Upper canopy may still be green. From above, appears as lighter green to yellow patches, sometimes in streaks following fertilizer application lines."
+
+6:
+  name: water_stress
+  display: "Water Stress / Drought"
+  crop: both
+  severity: medium
+  visual_signature: "Leaf rolling (corn), wilting, gray-green color shift"
+  aerial_signature: "Dull gray-green patches, leaf rolling visible as canopy texture change"
+  confidence_threshold: 0.40
+  agri_forge_description: "Crop showing wilting and leaf rolling. Corn leaves curled inward like tacos. Color shifted from vibrant green to dull gray-green. Canopy appears thinner and less uniform from above. Often in elevated areas of field that drain faster."
+
+7:
+  name: weed_pressure
+  display: "Weed Pressure"
+  crop: both
+  severity: medium
+  visual_signature: "Different plant species/texture/color mixed into crop rows"
+  aerial_signature: "Irregular green patches with different texture/height than crop"
+  confidence_threshold: 0.50
+  agri_forge_description: "Mixed vegetation in crop rows showing different leaf shapes, heights, and green tones from the main crop. Weeds may be taller or shorter than crop. From above, appears as irregular textured patches disrupting the uniform row pattern."
+
+8:
+  name: stand_gap
+  display: "Stand Gap / Emergence Issue"
+  crop: both
+  severity: low
+  visual_signature: "Missing plants in row, bare soil visible"
+  aerial_signature: "Brown soil streaks visible through canopy gaps in row pattern"
+  confidence_threshold: 0.50
+  agri_forge_description: "Gaps in crop rows where plants failed to emerge or died. Bare brown soil visible between remaining green plants. Row pattern is broken. From above, appears as brown lines or patches interrupting green crop rows."
+
+9:
+  name: ponding
+  display: "Ponding / Drainage Issue"
+  crop: both
+  severity: medium
+  visual_signature: "Standing water, saturated dark soil, drowned yellowing plants"
+  aerial_signature: "Dark wet patches, sometimes reflective, surrounded by stressed yellow crop"
+  confidence_threshold: 0.45
+  agri_forge_description: "Low areas of field with standing water or visibly saturated dark soil. Surrounding crop plants are yellowed or stunted from waterlogging. From above, wet areas appear as dark patches, may be reflective. Adjacent crop shows stress yellowing."
+
+10:
+  name: healthy
+  display: "Healthy Crop"
+  crop: both
+  severity: none
+  visual_signature: "Uniform green canopy, consistent row spacing, no discoloration"
+  aerial_signature: "Even green canopy with uniform texture"
+  confidence_threshold: 0.60
+  agri_forge_description: "Healthy uniform crop canopy. Even green coloration. Consistent row spacing visible. No discoloration, no gaps, no wilting. This is the baseline normal appearance for training negative examples."
+
+# ═══════════════════════════════════════════════════════════════
+# YOLO classes.txt (paste into AGRI-FORGE and training configs):
+# ═══════════════════════════════════════════════════════════════
+# gray_leaf_spot
+# northern_corn_leaf_blight
+# common_rust
+# sudden_death_syndrome
+# frogeye_leaf_spot
+# nitrogen_deficiency
+# water_stress
+# weed_pressure
+# stand_gap
+# ponding
+# healthy
+# ═══════════════════════════════════════════════════════════════
+
+# ── AGRI-FORGE Generation Priority ─────────────────────────────
+# For a 1,000 image batch, distribute roughly:
+#
+#   gray_leaf_spot:            120 images (most common corn disease in Ohio)
+#   northern_corn_leaf_blight: 100 images
+#   common_rust:                80 images
+#   sudden_death_syndrome:      80 images
+#   frogeye_leaf_spot:          70 images
+#   nitrogen_deficiency:       100 images (very common, high value)
+#   water_stress:              100 images (very common, high value)
+#   weed_pressure:              80 images
+#   stand_gap:                  70 images
+#   ponding:                    60 images
+#   healthy:                   140 images (need strong negative class)
+#
+# Total: 1,000 images
+#
+# Rationale:
+#   - Healthy needs the most samples because it's the negative class
+#     the model must learn to NOT flag
+#   - Disease classes get more weight than mechanical classes because
+#     disease is what farmers lose money on
+#   - Nitrogen and water stress are very common and high-value detections
+# ═══════════════════════════════════════════════════════════════
+
+# ── Scene Variance Parameters for AGRI-FORGE ───────────────────
+# Each image should vary these parameters:
+#
+# Altitude simulation: 15m, 20m, 25m, 30m, 40m (affects apparent size)
+# Time of day / lighting: morning golden, midday harsh, overcast flat, late afternoon
+# Growth stage: early (V3-V6), mid (V8-VT), late (R1-R5)
+# Severity: light (5-10% of frame affected), moderate (15-30%), heavy (40%+)
+# Camera angle: nadir (straight down), slight oblique (10-15 degrees)
+# Background: clean field, weedy field edge, tree line visible, equipment in frame
+# Weather effect: dry conditions, after rain (wet foliage), morning dew
+#
+# The agri_forge_description field above gives Cosmos the text prompt
+# for generating visually realistic variants of each class.

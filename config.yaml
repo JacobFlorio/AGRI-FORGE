@@ -1,0 +1,125 @@
+# ──────────────────────────────────────────────────────────────────────
+# AGRI-FORGE Configuration
+# Agricultural Data Forge & Model Training Pipeline for Ohio Crop Scouting
+# Optimized for RTX 5080 + Isaac Sim at C:\isaacsim + WSL Ubuntu 22.04
+# ──────────────────────────────────────────────────────────────────────
+
+project:
+  name: AGRI-FORGE
+  version: "0.1.0"
+  description: "Synthetic data + fine-tuned YOLOv8 + Cosmos-Reason2 for autonomous drone crop scouting"
+
+# ── Paths ────────────────────────────────────────────────────────────
+paths:
+  data_root: "./datasets"
+  model_output: "./models"
+  export_dir: "./export/builds"
+  output_dir: "~/AGRI-FORGE/output"
+  matlab_root: "/usr/local/MATLAB/R2024b"          # adjust if your MATLAB version differs
+  cosmos_cache: "~/.cache/huggingface/hub"
+  jarvis_root: "~/JARVIS"
+
+# ── Hardware ─────────────────────────────────────────────────────────
+hardware:
+  gpu_device: 0
+  max_vram_gb: 14.0                                 # RTX 5080 - keep ~2 GB headroom
+  cuda_version: "12.6"
+
+# ── Isaac Sim Integration (Critical for photorealistic synthetic data)
+isaacsim:
+  path: "C:/isaacsim"                               # exact Windows path you found
+  python_exe: "C:/isaacsim/python.bat"              # Windows path visible from WSL
+  version: "5.1.0"                                   # detected from C:\isaacsim\VERSION
+  ros2_bridge: true
+  headless: true
+  render_resolution: [1920, 1080]
+  camera_altitude_m: [30, 80]
+  max_batch_size: 50                                # adjust down if VRAM spikes
+
+# ── Jetson Deployment ────────────────────────────────────────────────
+jetson:
+  host: "192.168.1.XXX"                             # ← CHANGE to your Jetson Orin Nano IP when ready
+  user: "jetson"
+  key_path: "~/.ssh/id_rsa"
+  models_dir: "/home/jetson/models"
+
+# ── Scraper ──────────────────────────────────────────────────────────
+scraper:
+  enabled: true
+  sources:
+    - naip
+    - usda_cropscape
+    - kaggle_ag
+  regions: ["Ohio", "Midwest"]
+  max_images: 5000
+  cache_dir: "./datasets/raw"
+
+# ── Synthetic Generation ─────────────────────────────────────────────
+synthetic:
+  enabled: true
+  mode: "isaac"                                     # "isaac" or "procedural"
+  num_images_per_batch: 50
+  total_target_images: 5000
+  altitude_m_range: [30, 80]
+  weather_options: ["clear", "overcast", "light_rain"]
+  time_of_day_options: ["morning", "noon", "afternoon"]
+  crop_types: ["corn", "soybean"]
+  anomaly_classes:
+    - "gray_leaf_spot"
+    - "northern_corn_leaf_blight"
+    - "common_rust"
+    - "sudden_death_syndrome"
+    - "frogeye_leaf_spot"
+    - "nitrogen_deficiency"
+    - "water_stress"
+    - "weed_pressure"
+    - "stand_gap"
+    - "ponding"
+    - "healthy"
+  inference_resolution: 640                          # YOLO training input size (downscaled from render res)
+  vlm_finetune:
+    vlm_resolution: 256                              # match ROS2→Cosmos pipeline (256x256)
+    vlm_jpeg_quality: 70                             # match ROS2→Cosmos JPEG quality
+  augmentation:
+    enabled: true
+    num_augmentations_per_image: 3
+
+# ── Swarm Simulation ─────────────────────────────────────────────────
+swarm:
+  enabled: true
+  max_agents: 200
+  dt: 0.1
+  field_size_m: [200, 200]                          # 4 ha test field
+  battery_min_pct: 20
+  personas: ["scout", "inspector", "relay"]
+
+# ── Training ─────────────────────────────────────────────────────────
+training:
+  enabled: true
+  base_model: "yolov8n.pt"
+  epochs: 8
+  batch_size: 16                                    # auto-scaled by Unsloth
+  lora_rank: 16
+  lora_alpha: 32
+  target_modules: ["q_proj", "v_proj"]
+  learning_rate: 0.0002
+  use_tensorrt: true                                # export for Jetson speed
+
+# ── Validation & Metrics ─────────────────────────────────────────────
+validation:
+  mAP_threshold: 0.5
+  cross_validate_with_jarvis: true
+
+metrics:
+  chemical_savings_baseline_pct: 45                 # targeted vs blanket spray
+  field_acres_per_drone: 400
+  ohio_county_data_enabled: true
+
+# ── Logging & Safety ─────────────────────────────────────────────────
+logging:
+  level: "INFO"
+  save_plots: true
+
+safety:
+  dry_run: true                                     # set to false only when ready for full runs
+  max_vram_safety_margin_gb: 2.0

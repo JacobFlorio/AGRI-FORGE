@@ -1,0 +1,248 @@
+# ═══════════════════════════════════════════════════════════════
+# Florio Industries — Cosmos Calibration Training Data
+# ═══════════════════════════════════════════════════════════════
+# These are MANUALLY CURATED training conversations that teach
+# Cosmos when to be confident and when to say "I'm not sure."
+#
+# Mix these into your AGRI-FORGE VLM fine-tuning dataset.
+# These should make up roughly 15-20% of your total training set.
+#
+# Three categories:
+#   1. CONFIDENT CORRECT — clear disease, strong diagnosis
+#   2. UNCERTAIN HONEST — ambiguous image, model admits uncertainty
+#   3. CONFIDENT NEGATIVE — clearly healthy, model says so firmly
+#
+# Format: ShareGPT/LLaVA conversation JSONL
+# Each entry is one training conversation.
+#
+# INSTRUCTIONS FOR AGRI-FORGE CLAUDE:
+# Add these conversation patterns to the VLM fine-tune output.
+# For each pattern, generate 15-25 variants with different
+# wording but the same reasoning structure.
+# The image_path field should point to an appropriate synthetic
+# image from the YOLO generation run.
+# ═══════════════════════════════════════════════════════════════
+
+# ── CATEGORY 1: CONFIDENT CORRECT ────────────────────────────
+# Clear presentations where the model SHOULD be confident.
+# These teach Cosmos what strong evidence looks like.
+
+- id: "cal_confident_gls_001"
+  category: "confident_correct"
+  image_description: "Clear gray leaf spot on corn, rectangular lesions parallel to veins, mid-canopy, moderate spread"
+  conversation:
+    - role: "system"
+      content: "You are an experienced agronomist analyzing aerial drone imagery of crop fields in central Ohio. You specialize in corn and soybean pathology. When shown an image, provide a structured assessment with OBSERVATION, DIAGNOSIS, SEVERITY, CONFIDENCE, and ACTION. Keep responses under 150 words."
+    - role: "user"
+      content: "Analyze this aerial image of a corn field. Flight altitude: 25m. Environmental: 27°C, 86% humidity, VPD 0.39 kPa. Fungal disease risk level: high. The object detector flagged: gray_leaf_spot at 82% confidence. Provide your assessment."
+    - role: "assistant"
+      content: |
+        OBSERVATION: Multiple rectangular gray-tan lesions visible on mid-canopy corn leaves, running parallel to leaf veins. Lesions are 2-4 cm in length. Affected area covers approximately 0.3 acres in a coherent cluster. Lower canopy shows heavier infection than upper canopy.
+
+        DIAGNOSIS: Gray leaf spot (Cercospora zeae-maydis). The rectangular shape, vein-parallel orientation, and gray-tan coloring are textbook presentation. High humidity (86%) and warm temperatures strongly favor continued development.
+
+        SEVERITY: 5/10. Moderate — established infection but has not reached upper canopy or ear leaf yet.
+
+        CONFIDENCE: High. Lesion morphology is distinctive and environmental conditions confirm.
+
+        ACTION: Scout rows in this zone on foot to confirm within 24 hours. If confirmed, apply strobilurin fungicide (e.g., Headline AMP) within 3-5 days before infection reaches the ear leaf. Spot-spray this zone only — do not spray the entire field.
+
+- id: "cal_confident_ndef_001"
+  category: "confident_correct"
+  image_description: "Clear nitrogen deficiency, V-shaped yellowing on lower leaves, streaks following application pattern"
+  conversation:
+    - role: "system"
+      content: "You are an experienced agronomist analyzing aerial drone imagery of crop fields in central Ohio. You specialize in corn and soybean pathology. When shown an image, provide a structured assessment with OBSERVATION, DIAGNOSIS, SEVERITY, CONFIDENCE, and ACTION. Keep responses under 150 words."
+    - role: "user"
+      content: "Analyze this aerial image of a corn field. Flight altitude: 25m. Environmental: 30°C, 62% humidity, VPD 1.42 kPa. Fungal disease risk level: low. The object detector flagged: nitrogen_deficiency at 75% confidence. Provide your assessment."
+    - role: "assistant"
+      content: |
+        OBSERVATION: Pale yellow-green streaks visible in the canopy running parallel to planting rows. Yellowing is most pronounced on lower leaves with V-shaped chlorosis pattern starting from leaf tips. Upper canopy still shows green coloration. The streaking pattern suggests variation along fertilizer application lines.
+
+        DIAGNOSIS: Nitrogen deficiency. The V-shaped lower-leaf chlorosis with streaking along application rows is characteristic of uneven nitrogen availability. Low humidity and high VPD rule out fungal causes for the discoloration.
+
+        SEVERITY: 4/10. Moderate — still early enough to correct with side-dress application. Yield impact depends on how quickly nitrogen is applied.
+
+        CONFIDENCE: High. Symptom pattern and spatial distribution are consistent with nitrogen limitation, not disease.
+
+        ACTION: Pull tissue samples from affected and unaffected areas to confirm nitrogen levels. If confirmed, side-dress 40-60 lbs/acre nitrogen in the affected zone within the next 7 days. The streaking pattern suggests checking your applicator calibration for next season.
+
+# ── CATEGORY 2: UNCERTAIN HONEST ─────────────────────────────
+# Ambiguous presentations where the model SHOULD express doubt.
+# THIS IS THE MOST IMPORTANT CATEGORY FOR REDUCING HALLUCINATION.
+
+- id: "cal_uncertain_ambig_001"
+  category: "uncertain_honest"
+  image_description: "Slight discoloration that could be early disease, normal maturation, shadow, or camera artifact"
+  conversation:
+    - role: "system"
+      content: "You are an experienced agronomist analyzing aerial drone imagery of crop fields in central Ohio. You specialize in corn and soybean pathology. When shown an image, provide a structured assessment with OBSERVATION, DIAGNOSIS, SEVERITY, CONFIDENCE, and ACTION. Keep responses under 150 words."
+    - role: "user"
+      content: "Analyze this aerial image of a corn field. Flight altitude: 25m. Environmental: 25°C, 71% humidity, VPD 0.85 kPa. Fungal disease risk level: moderate. The object detector flagged: disease_fungal at 48% confidence. Provide your assessment."
+    - role: "assistant"
+      content: |
+        OBSERVATION: Subtle color variation visible in a small area of the canopy. Slight yellow-green tint in a patch approximately 20 meters across. No clear lesion patterns distinguishable at this altitude. The discoloration is faint and could have multiple causes.
+
+        DIAGNOSIS: Inconclusive. This could be early-stage fungal disease, mild nutrient stress, natural color variation between hybrids, or an artifact of afternoon shadow angle. The detector confidence of 48% reflects this ambiguity. I cannot make a definitive diagnosis from this image alone.
+
+        SEVERITY: 2/10 at most if it is disease. Too early to assess if the cause is unknown.
+
+        CONFIDENCE: Low. The visual evidence is insufficient for a specific diagnosis.
+
+        ACTION: Mark this location for ground scouting within the next week. Pull 5-10 leaves from the affected area and compare to adjacent healthy plants. If lesions are visible up close, photograph them and consider sending samples to the OSU Plant Diagnostic Lab. Do NOT apply fungicide based on this detection alone — the evidence does not justify the cost.
+
+- id: "cal_uncertain_lookalike_001"
+  category: "uncertain_honest"
+  image_description: "Could be gray leaf spot OR northern corn leaf blight — similar from aerial view"
+  conversation:
+    - role: "system"
+      content: "You are an experienced agronomist analyzing aerial drone imagery of crop fields in central Ohio. You specialize in corn and soybean pathology. When shown an image, provide a structured assessment with OBSERVATION, DIAGNOSIS, SEVERITY, CONFIDENCE, and ACTION. Keep responses under 150 words."
+    - role: "user"
+      content: "Analyze this aerial image of a corn field. Flight altitude: 25m. Environmental: 26°C, 83% humidity, VPD 0.51 kPa. Fungal disease risk level: high. The object detector flagged: gray_leaf_spot at 55% confidence. Provide your assessment."
+    - role: "assistant"
+      content: |
+        OBSERVATION: Gray-tan lesions visible on corn leaves in a scattered pattern across approximately 0.5 acres. Lesion shape is difficult to determine precisely at 25m altitude. Some lesions appear elongated but it is unclear whether they are rectangular (parallel to veins) or cigar-shaped.
+
+        DIAGNOSIS: Likely fungal foliar disease — either gray leaf spot (Cercospora zeae-maydis) or northern corn leaf blight (Exserohilum turcicum). Both are plausible given the environmental conditions. Distinguishing them requires seeing lesion shape up close — GLS has rectangular vein-bounded lesions while NCLB has larger cigar-shaped lesions. The treatment is similar but resistance genetics differ.
+
+        SEVERITY: 4/10. Moderate fungal pressure regardless of specific pathogen.
+
+        CONFIDENCE: Medium. Confident this is fungal disease. Not confident which specific disease without ground verification.
+
+        ACTION: Scout this zone on foot within 48 hours. Examine lesion shape closely: rectangular and vein-bounded = GLS, large cigar-shaped = NCLB. Both respond to strobilurin fungicides, so treatment is similar either way. If you confirm either pathogen, apply within 5 days. Report which disease it is — this improves our detection accuracy for future flights.
+
+- id: "cal_uncertain_env_only_001"
+  category: "uncertain_honest"
+  image_description: "Healthy looking canopy but environmental conditions are dangerous"
+  conversation:
+    - role: "system"
+      content: "You are an experienced agronomist analyzing aerial drone imagery of crop fields in central Ohio. You specialize in corn and soybean pathology. When shown an image, provide a structured assessment with OBSERVATION, DIAGNOSIS, SEVERITY, CONFIDENCE, and ACTION. Keep responses under 150 words."
+    - role: "user"
+      content: "Analyze this aerial image of a corn field. Flight altitude: 25m. Environmental: 24°C, 92% humidity, VPD 0.24 kPa. Fungal disease risk level: high. No object detections triggered. The farmer requested a spot check of this zone. Provide your assessment."
+    - role: "assistant"
+      content: |
+        OBSERVATION: Canopy appears uniformly green and healthy at this altitude. No visible discoloration, lesions, gaps, or stress indicators detected in the image. Row spacing and plant height appear normal.
+
+        DIAGNOSIS: No visible disease or stress at this time. However, environmental conditions are extremely concerning — 92% humidity with VPD at 0.24 kPa is well below the fungal risk threshold. These conditions strongly favor rapid development of gray leaf spot, common rust, and other foliar diseases. The absence of visible symptoms does NOT mean the field is safe.
+
+        SEVERITY: 1/10 currently. But environmental risk is 8/10.
+
+        CONFIDENCE: High that the canopy appears healthy now. High that conditions favor imminent disease development.
+
+        ACTION: No treatment needed today, but increase scouting frequency to every 3-4 days while humidity remains above 85%. If humidity persists at this level for 48+ hours, preemptive fungicide application may be economically justified depending on crop stage and yield potential. This zone should be the first priority on the next flight.
+
+- id: "cal_uncertain_altitude_001"
+  category: "uncertain_honest"
+  image_description: "Detection at high altitude where resolution is poor"
+  conversation:
+    - role: "system"
+      content: "You are an experienced agronomist analyzing aerial drone imagery of crop fields in central Ohio. You specialize in corn and soybean pathology. When shown an image, provide a structured assessment with OBSERVATION, DIAGNOSIS, SEVERITY, CONFIDENCE, and ACTION. Keep responses under 150 words."
+    - role: "user"
+      content: "Analyze this aerial image of a soybean field. Flight altitude: 40m. Environmental: 28°C, 74% humidity, VPD 1.00 kPa. Fungal disease risk level: moderate. The object detector flagged: sudden_death_syndrome at 42% confidence. Provide your assessment."
+    - role: "assistant"
+      content: |
+        OBSERVATION: Patchy yellow-brown discoloration visible in a low-lying area of the soybean field. At 40m altitude, individual plant detail is not resolvable. The affected area appears to be approximately 0.4 acres, concentrated in what looks like a drainage low point.
+
+        DIAGNOSIS: Cannot confirm sudden death syndrome from this altitude. The yellow-brown pattern in a low area is consistent with SDS, but it is also consistent with iron deficiency chlorosis, flooding stress, or herbicide carryover — all of which preferentially affect low spots. A 42% detector confidence at 40m altitude is not sufficient for diagnosis.
+
+        SEVERITY: Unknown without ground confirmation.
+
+        CONFIDENCE: Low. Altitude is too high for reliable visual diagnosis of soybean diseases. Recommend a spot-check flight at 15m over this area.
+
+        ACTION: Dispatch a spot-check mission at 15m altitude over this zone for higher resolution imagery. If that is not immediately possible, scout on foot — pull affected plants and check for blue fungal growth on the roots, which would confirm SDS versus other causes. Do not make treatment decisions based on this detection.
+
+# ── CATEGORY 3: CONFIDENT NEGATIVE ───────────────────────────
+# Clearly healthy crop where the model should NOT find problems.
+# This teaches Cosmos to suppress false positives.
+
+- id: "cal_healthy_clear_001"
+  category: "confident_negative"
+  image_description: "Perfectly healthy corn canopy, uniform green, no anomalies"
+  conversation:
+    - role: "system"
+      content: "You are an experienced agronomist analyzing aerial drone imagery of crop fields in central Ohio. You specialize in corn and soybean pathology. When shown an image, provide a structured assessment with OBSERVATION, DIAGNOSIS, SEVERITY, CONFIDENCE, and ACTION. Keep responses under 150 words."
+    - role: "user"
+      content: "Analyze this aerial image of a corn field. Flight altitude: 25m. Environmental: 26°C, 65% humidity, VPD 1.14 kPa. Fungal disease risk level: low. No object detections triggered. The farmer requested a routine scan of this zone. Provide your assessment."
+    - role: "assistant"
+      content: |
+        OBSERVATION: Uniform dark green canopy with consistent row spacing. Plant height appears even across the zone. No discoloration, thinning, gaps, or visual anomalies detected. Canopy closure looks good.
+
+        DIAGNOSIS: Healthy crop. No disease, pest, nutrient, or water stress indicators visible.
+
+        SEVERITY: 0/10. No issues detected.
+
+        CONFIDENCE: High. Clean canopy with favorable environmental conditions (VPD in optimal range, low fungal risk).
+
+        ACTION: No action needed for this zone. Continue routine scouting schedule. Environmental conditions are currently favorable — VPD at 1.14 kPa is in the optimal range for corn growth with low disease pressure.
+
+- id: "cal_healthy_false_trigger_001"
+  category: "confident_negative"
+  image_description: "YOLO triggered on field edge shadows or equipment, but crop is healthy"
+  conversation:
+    - role: "system"
+      content: "You are an experienced agronomist analyzing aerial drone imagery of crop fields in central Ohio. You specialize in corn and soybean pathology. When shown an image, provide a structured assessment with OBSERVATION, DIAGNOSIS, SEVERITY, CONFIDENCE, and ACTION. Keep responses under 150 words."
+    - role: "user"
+      content: "Analyze this aerial image of a corn field. Flight altitude: 25m. Environmental: 29°C, 58% humidity, VPD 1.65 kPa. Fungal disease risk level: low. The object detector flagged: water_stress at 52% confidence. Provide your assessment."
+    - role: "assistant"
+      content: |
+        OBSERVATION: The area flagged by the detector appears to be a shadow cast by a tree line along the field edge, creating a darker band across several rows. The crop within and around the shadow shows consistent green coloration and normal canopy density. No leaf rolling, wilting, or gray-green color shift visible.
+
+        DIAGNOSIS: False positive. The detector likely triggered on the shadow contrast, not on actual water stress. The crop appears healthy in this zone.
+
+        SEVERITY: 0/10. No actual stress detected.
+
+        CONFIDENCE: High that this is a false positive. The flagged area corresponds to tree line shadow, and no stress symptoms are visible in the surrounding crop.
+
+        ACTION: No action needed. Note: VPD is at 1.65 kPa which is approaching the upper stress threshold. While no stress is visible today, if VPD continues rising over the next few days, this field may develop genuine water stress. Monitor but do not treat.
+
+- id: "cal_healthy_normal_variation_001"
+  category: "confident_negative"
+  image_description: "Slight natural color variation between corn hybrids or maturity stages, not disease"
+  conversation:
+    - role: "system"
+      content: "You are an experienced agronomist analyzing aerial drone imagery of crop fields in central Ohio. You specialize in corn and soybean pathology. When shown an image, provide a structured assessment with OBSERVATION, DIAGNOSIS, SEVERITY, CONFIDENCE, and ACTION. Keep responses under 150 words."
+    - role: "user"
+      content: "Analyze this aerial image of a corn field. Flight altitude: 25m. Environmental: 27°C, 70% humidity, VPD 0.98 kPa. Fungal disease risk level: moderate. The object detector flagged: nutrient_deficiency at 46% confidence. Provide your assessment."
+    - role: "assistant"
+      content: |
+        OBSERVATION: A subtle shift in canopy green tone is visible along what appears to be a planting boundary — slightly lighter green on one side, slightly darker on the other. The transition is linear and follows row direction. No V-shaped chlorosis, no lesion patterns, no wilting.
+
+        DIAGNOSIS: Normal hybrid variation or maturity difference, not nutrient deficiency. The linear boundary strongly suggests two different corn hybrids planted adjacent to each other, which commonly show slightly different green tones from the air. This is a false positive.
+
+        SEVERITY: 0/10. Natural variation, not a problem.
+
+        CONFIDENCE: High. The linear boundary pattern is diagnostic of a planting change, not a nutrient or disease gradient, which would show irregular edges following soil or drainage patterns.
+
+        ACTION: No action needed. If this field has two hybrids planted, note the boundary in your records. Future flights over this area may continue to trigger low-confidence detections at this boundary — consider adding it as a known exclusion zone in the system configuration.
+
+# ═══════════════════════════════════════════════════════════════
+# MIXING INSTRUCTIONS FOR AGRI-FORGE:
+# ═══════════════════════════════════════════════════════════════
+#
+# For a 1,000 image VLM training dataset, target this distribution:
+#
+#   Confident correct (clear disease/stress):    500 conversations (50%)
+#   Uncertain honest (ambiguous/hard calls):     200 conversations (20%)
+#   Confident negative (healthy/false positive): 200 conversations (20%)
+#   Edge cases (equipment, shadows, artifacts):  100 conversations (10%)
+#
+# For each pattern above, generate 15-25 variants:
+#   - Different wording but same reasoning structure
+#   - Different specific diseases/conditions
+#   - Different environmental contexts
+#   - Different severity levels within the same condition
+#   - Different altitudes (15m, 25m, 35m, 40m)
+#   - Different growth stages (V6, V12, VT, R1, R3)
+#
+# CRITICAL: Every "uncertain" example must include a SPECIFIC
+# reason WHY the model is uncertain (altitude too high, lesion
+# shape unclear, multiple possible causes, etc.) and a SPECIFIC
+# next step (scout on foot, fly lower, pull tissue samples).
+# Vague uncertainty like "hard to tell" is not useful.
+#
+# CRITICAL: Every "confident negative" example must include a
+# SPECIFIC explanation of what the false trigger was (shadow,
+# hybrid boundary, equipment track, camera angle artifact).
+# This teaches the model to recognize and explain false positives
+# rather than just ignoring them.
+# ═══════════════════════════════════════════════════════════════

@@ -1,0 +1,894 @@
+"""
+simulation/isaac_scene_generator.py — Full Isaac Sim photorealistic rendering
+=============================================================================
+Drives NVIDIA Isaac Sim (installed at C:\\isaacsim on Windows) from WSL to
+produce photorealistic aerial crop imagery with automatic annotations.
+
+Architecture:
+  1. Generate USD scene descriptions with crop fields, disease overlays,
+     drone cameras, and environmental lighting
+  2. Write a self-contained Isaac Sim Python script per batch
+  3. Execute via isaac_bridge.py → powershell.exe → Isaac python.bat
+  4. Collect RGB + depth + segmentation + YOLO labels from shared dir
+
+The rendering runs entirely on the Windows GPU (RTX 5080).  WSL handles
+scene generation, annotation extraction, and dataset assembly.
+
+Output per image:
+  - RGB PNG (640x640 or configured resolution)
+  - Depth EXR or PNG (metric depth from drone altitude)
+  - Segmentation mask PNG (per-class instance IDs)
+  - YOLO-format .txt label (class cx cy w h)
+  - Metadata JSON (camera pose, lighting, disease placement)
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import random
+import shutil
+import textwrap
+import time
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import yaml
+
+from simulation.isaac_bridge import IsaacBridge, VRAMGuard, wsl_to_win
+
+
+# ── Disease USD material definitions ────────────────────────────────
+# Each disease maps to a material override (color shift + roughness)
+# applied to crop prim regions in the USD scene.
+DISEASE_USD_MATERIALS = {
+    # ── TIER 1: Ohio Corn Diseases ──────────────────────────────────
+    "gray_leaf_spot": {
+        "base_color": [0.55, 0.55, 0.40],
+        "roughness": 0.7,
+        "metallic": 0.0,
+        "emissive": [0, 0, 0],
+        "opacity": 0.8,
+        "scale_range": [0.3, 1.2],
+    },
+    "northern_corn_leaf_blight": {
+        "base_color": [0.50, 0.45, 0.32],
+        "roughness": 0.75,
+        "metallic": 0.0,
+        "emissive": [0, 0, 0],
+        "opacity": 0.85,
+        "scale_range": [0.5, 2.0],
+    },
+    "common_rust": {
+        "base_color": [0.72, 0.32, 0.12],
+        "roughness": 0.5,
+        "metallic": 0.1,
+        "emissive": [0, 0, 0],
+        "opacity": 0.9,
+        "scale_range": [0.1, 0.5],
+    },
+    # ── TIER 2: Ohio Soybean Diseases ───────────────────────────────
+    "sudden_death_syndrome": {
+        "base_color": [0.45, 0.52, 0.22],
+        "roughness": 0.65,
+        "metallic": 0.0,
+        "emissive": [0, 0, 0],
+        "opacity": 0.7,
+        "scale_range": [1.0, 3.0],
+    },
+    "frogeye_leaf_spot": {
+        "base_color": [0.63, 0.63, 0.63],
+        "roughness": 0.55,
+        "metallic": 0.0,
+        "emissive": [0, 0, 0],
+        "opacity": 0.75,
+        "scale_range": [0.15, 0.6],
+    },
+    # ── TIER 3: Cross-Crop Stress Classes ───────────────────────────
+    "nitrogen_deficiency": {
+        "base_color": [0.72, 0.70, 0.25],
+        "roughness": 0.7,
+        "metallic": 0.0,
+        "emissive": [0, 0, 0],
+        "opacity": 0.5,
+        "scale_range": [1.5, 4.0],
+    },
+    "water_stress": {
+        "base_color": [0.55, 0.58, 0.40],
+        "roughness": 0.8,
+        "metallic": 0.0,
+        "emissive": [0, 0, 0],
+        "opacity": 0.5,
+        "scale_range": [2.0, 6.0],
+    },
+    "weed_pressure": {
+        "base_color": [0.15, 0.45, 0.10],
+        "roughness": 0.6,
+        "metallic": 0.0,
+        "emissive": [0, 0, 0],
+        "opacity": 0.7,
+        "scale_range": [0.5, 2.0],
+    },
+    "stand_gap": {
+        "base_color": [0.50, 0.40, 0.25],
+        "roughness": 0.9,
+        "metallic": 0.0,
+        "emissive": [0, 0, 0],
+        "opacity": 0.85,
+        "scale_range": [0.8, 3.0],
+    },
+    "ponding": {
+        "base_color": [0.12, 0.14, 0.18],
+        "roughness": 0.1,
+        "metallic": 0.3,
+        "emissive": [0, 0, 0],
+        "opacity": 0.9,
+        "scale_range": [1.5, 5.0],
+    },
+    "healthy": {
+        "base_color": [0.20, 0.50, 0.15],
+        "roughness": 0.6,
+        "metallic": 0.0,
+        "emissive": [0, 0, 0],
+        "opacity": 0.1,
+        "scale_range": [0.1, 0.3],
+    },
+}
+
+# ── Time-of-day lighting presets ────────────────────────────────────
+LIGHTING_PRESETS = {
+    "morning": {
+        "sun_elevation": 20,
+        "sun_azimuth": 90,
+        "intensity": 800,
+        "color_temp": 4500,
+        "sky_color": [0.5, 0.6, 0.8],
+    },
+    "midday": {
+        "sun_elevation": 70,
+        "sun_azimuth": 180,
+        "intensity": 1200,
+        "color_temp": 5800,
+        "sky_color": [0.4, 0.5, 0.9],
+    },
+    "afternoon": {
+        "sun_elevation": 45,
+        "sun_azimuth": 250,
+        "intensity": 1000,
+        "color_temp": 5200,
+        "sky_color": [0.5, 0.55, 0.85],
+    },
+    "golden_hour": {
+        "sun_elevation": 10,
+        "sun_azimuth": 270,
+        "intensity": 500,
+        "color_temp": 3500,
+        "sky_color": [0.8, 0.6, 0.4],
+    },
+    "overcast": {
+        "sun_elevation": 50,
+        "sun_azimuth": 180,
+        "intensity": 400,
+        "color_temp": 6500,
+        "sky_color": [0.7, 0.7, 0.7],
+    },
+}
+
+# ── Weather effect parameters ───────────────────────────────────────
+WEATHER_PRESETS = {
+    "clear": {"fog_density": 0.0, "rain_intensity": 0.0, "cloud_cover": 0.1},
+    "partly_cloudy": {"fog_density": 0.0, "rain_intensity": 0.0, "cloud_cover": 0.4},
+    "hazy": {"fog_density": 0.002, "rain_intensity": 0.0, "cloud_cover": 0.3},
+    "overcast": {"fog_density": 0.001, "rain_intensity": 0.0, "cloud_cover": 0.9},
+    "light_rain": {"fog_density": 0.003, "rain_intensity": 0.3, "cloud_cover": 0.8},
+}
+
+
+class IsaacSceneGenerator:
+    """Generate photorealistic crop scenes via Isaac Sim rendering.
+
+    Bridge architecture:
+      1. Check Isaac Sim reachability via /mnt/c/ shared mount
+      2. Generate USD scene descriptions with crop fields + disease overlays
+      3. Execute render scripts via isaac_bridge → powershell → python.bat
+      4. Collect RGB/depth/segmentation from C:\\agri_forge_isaac_data
+      5. Fall back to procedural generation when Isaac Sim is unreachable
+    """
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.isaac_cfg = cfg.get("isaac_sim", {})
+        self.synth_cfg = cfg.get("synthetic", {})
+        self.hw_cfg = cfg.get("hardware", {})
+
+        self.resolution = tuple(self.synth_cfg.get("resolution", [640, 640]))
+        self.disease_classes = self.synth_cfg.get("disease_classes", list(DISEASE_USD_MATERIALS.keys()))
+        self.class_to_idx = {c: i for i, c in enumerate(self.disease_classes)}
+
+        self.altitude_range = self.isaac_cfg.get("altitude_range_m", [30, 80])
+        self.field_size_m = self.isaac_cfg.get("field_size_m", 200)
+        self.crop_types = self.isaac_cfg.get("crop_types", ["corn", "soybean"])
+        self.scenes_per_batch = self.isaac_cfg.get("num_scenes_per_batch", 50)
+
+        self.bridge = IsaacBridge(cfg)
+        self.vram_guard = VRAMGuard(self.hw_cfg.get("max_vram_gb", 14.0))
+
+        # Output paths — share the same full_res/ + train/ pipeline as procedural
+        data_root = Path(cfg["paths"]["data_root"]).expanduser()
+        self.output_dir = data_root / "synthetic"
+        self.full_res_dir = self.output_dir / "full_res"
+        self.train_dir = self.output_dir / "train"
+        infer_res = self.synth_cfg.get("inference_resolution", 640)
+        self.inference_resolution = (infer_res, infer_res)
+        for sub in ["images", "labels", "depth", "segmentation", "metadata"]:
+            (self.output_dir / sub).mkdir(parents=True, exist_ok=True)
+        self.full_res_dir.mkdir(parents=True, exist_ok=True)
+        (self.train_dir / "images").mkdir(parents=True, exist_ok=True)
+        (self.train_dir / "labels").mkdir(parents=True, exist_ok=True)
+
+    # ── Scene description generation ────────────────────────────────
+    def _random_scene_params(self, scene_idx: int) -> dict:
+        """Generate randomized parameters for one scene."""
+        altitude = random.uniform(*self.altitude_range)
+        crop = random.choice(self.crop_types)
+        lighting = random.choice(list(LIGHTING_PRESETS.keys()))
+        weather = random.choice(list(WEATHER_PRESETS.keys()))
+
+        # Random camera position over field
+        cam_x = random.uniform(-self.field_size_m / 3, self.field_size_m / 3)
+        cam_y = random.uniform(-self.field_size_m / 3, self.field_size_m / 3)
+        # Slight camera tilt for variety (mostly nadir)
+        cam_pitch = random.uniform(-5, 0)  # degrees from vertical
+        cam_yaw = random.uniform(0, 360)
+
+        # Crop row parameters
+        row_spacing = random.uniform(0.6, 1.0)  # meters
+        row_angle = random.uniform(-10, 10)  # degrees
+        plant_height = random.uniform(0.3, 2.0)  # depends on growth stage
+        plant_density = random.uniform(0.6, 0.95)
+
+        # Diseases for this scene (1-3)
+        num_diseases = random.randint(1, min(3, len(self.disease_classes)))
+        diseases = random.sample(self.disease_classes, num_diseases)
+
+        # Disease placement: each disease gets a random patch in the field
+        disease_patches = []
+        for disease in diseases:
+            mat = DISEASE_USD_MATERIALS.get(disease, {})
+            scale = random.uniform(*mat.get("scale_range", [0.5, 2.0]))
+            patch = {
+                "disease": disease,
+                "class_idx": self.class_to_idx[disease],
+                "center_x": random.uniform(-self.field_size_m / 4, self.field_size_m / 4),
+                "center_y": random.uniform(-self.field_size_m / 4, self.field_size_m / 4),
+                "radius_m": scale * random.uniform(2, 10),
+                "material": mat,
+                "num_instances": random.randint(3, 20),
+            }
+            disease_patches.append(patch)
+
+        return {
+            "scene_idx": scene_idx,
+            "altitude_m": altitude,
+            "crop_type": crop,
+            "lighting": lighting,
+            "weather": weather,
+            "camera": {
+                "x": cam_x, "y": cam_y, "z": altitude,
+                "pitch": cam_pitch, "yaw": cam_yaw,
+            },
+            "field": {
+                "size_m": self.field_size_m,
+                "row_spacing_m": row_spacing,
+                "row_angle_deg": row_angle,
+                "plant_height_m": plant_height,
+                "plant_density": plant_density,
+            },
+            "diseases": disease_patches,
+            "lighting_params": LIGHTING_PRESETS[lighting],
+            "weather_params": WEATHER_PRESETS[weather],
+            "resolution": list(self.resolution),
+        }
+
+    def _compute_yolo_boxes(self, scene: dict) -> list[dict]:
+        """Compute YOLO bounding boxes from scene disease patches.
+
+        Projects 3D disease patch positions into camera pixel coordinates
+        using pinhole camera geometry from the drone's altitude.
+        """
+        cam = scene["camera"]
+        w, h = scene["resolution"]
+        altitude = cam["z"]
+
+        # Camera FOV determines ground coverage
+        # YOLOv8 training at 640px; typical drone cam ~60-90° HFOV
+        hfov_deg = self.isaac_cfg.get("camera_hfov_deg", 70)
+        ground_width = 2 * altitude * math.tan(math.radians(hfov_deg / 2))
+        ground_height = ground_width * (h / w)  # assuming square-ish
+        pixels_per_meter = w / ground_width
+
+        boxes = []
+        for patch in scene["diseases"]:
+            # Offset from camera center
+            dx = patch["center_x"] - cam["x"]
+            dy = patch["center_y"] - cam["y"]
+
+            # Project to pixel coords (simple nadir approximation)
+            px = w / 2 + dx * pixels_per_meter
+            py = h / 2 + dy * pixels_per_meter
+
+            # Patch size in pixels
+            radius_px = patch["radius_m"] * pixels_per_meter
+
+            # Generate multiple instance boxes within the patch
+            for _ in range(patch["num_instances"]):
+                # Random offset within patch
+                angle = random.uniform(0, 2 * math.pi)
+                r = random.uniform(0, radius_px * 0.8)
+                ix = px + r * math.cos(angle)
+                iy = py + r * math.sin(angle)
+                iw = random.uniform(radius_px * 0.1, radius_px * 0.4)
+                ih = random.uniform(radius_px * 0.1, radius_px * 0.4)
+
+                # Normalize to [0, 1]
+                cx = ix / w
+                cy = iy / h
+                bw = (iw * 2) / w
+                bh = (ih * 2) / h
+
+                # Clamp
+                if 0 < cx < 1 and 0 < cy < 1:
+                    boxes.append({
+                        "class": patch["disease"],
+                        "class_idx": patch["class_idx"],
+                        "cx": max(0, min(1, cx)),
+                        "cy": max(0, min(1, cy)),
+                        "bw": min(bw, 1.0),
+                        "bh": min(bh, 1.0),
+                    })
+
+        return boxes
+
+    # ── Isaac Sim script generation ─────────────────────────────────
+    def _generate_render_script(self, scenes: list[dict],
+                                shared_dir_win: str) -> str:
+        """Generate a self-contained Python script for Isaac Sim to execute.
+
+        This script runs inside Isaac Sim's embedded Python environment on
+        Windows.  It creates USD scenes, renders them, and writes output
+        to the shared directory.
+        """
+        scenes_json = json.dumps(scenes)
+        w, h = self.resolution
+
+        # The script uses omni.isaac.core + omni.kit for rendering
+        script = textwrap.dedent(f'''\
+            #!/usr/bin/env python3
+            """AGRI-FORGE Isaac Sim batch render script (auto-generated)."""
+            import json
+            import math
+            import os
+            import sys
+
+            # ── Isaac Sim bootstrap ─────────────────────────────────
+            # Isaac Sim 5.x moved SimulationApp to the isaacsim package.
+            # Try 5.x imports first, then fall back to 4.x.
+            SimulationApp = None
+            try:
+                from isaacsim import SimulationApp
+            except ImportError:
+                pass
+
+            if SimulationApp is None:
+                try:
+                    from omni.isaac.kit import SimulationApp
+                except ImportError:
+                    pass
+
+            if SimulationApp is None:
+                print("ERROR: Must run inside Isaac Sim Python environment")
+                print("Use: <isaac_sim_path>/python.bat this_script.py")
+                sys.exit(1)
+
+            import carb
+            import omni
+
+            # Launch headless simulation app
+            CONFIG = {{
+                "headless": {self.bridge.headless},
+                "width": {w},
+                "height": {h},
+                "renderer": "RayTracedLighting",
+                "anti_aliasing": "FXAA",
+            }}
+            simulation_app = SimulationApp(CONFIG)
+
+            # Now import Omniverse modules (available after SimulationApp init)
+            import numpy as np
+            from omni.isaac.core import World
+            from omni.isaac.core.prims import XFormPrim
+            from omni.isaac.core.utils.stage_utils import add_reference_to_stage
+            import omni.isaac.core.utils.prims as prim_utils
+            import omni.replicator.core as rep
+            from pxr import Gf, UsdGeom, UsdShade, Sdf, UsdLux
+
+            SHARED_DIR = r"{shared_dir_win}"
+            SCENES = json.loads(r\'\'\'{scenes_json}\'\'\')
+
+            world = World(stage_units_in_meters=1.0)
+
+            def create_ground_plane(field_size):
+                """Create a flat ground plane textured as soil."""
+                plane = prim_utils.create_prim(
+                    "/World/GroundPlane",
+                    "Plane",
+                    position=np.array([0, 0, 0]),
+                    attributes={{"xformOp:scale": Gf.Vec3f(field_size, field_size, 1)}},
+                )
+                # Brown soil material
+                mtl_path = "/World/Looks/SoilMaterial"
+                omni.kit.commands.execute("CreateMdlMaterialPrim",
+                    mtl_url="OmniPBR.mdl",
+                    mtl_name="OmniPBR",
+                    mtl_path=mtl_path,
+                )
+                omni.kit.commands.execute("BindMaterial",
+                    prim_path="/World/GroundPlane",
+                    material_path=mtl_path,
+                )
+                shade = UsdShade.Material(world.stage.GetPrimAtPath(mtl_path))
+                shader = shade.GetSurfaceOutput().GetConnectedSource()[0]
+                shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(
+                    Gf.Vec3f(0.25, 0.18, 0.10)
+                )
+                return plane
+
+            def create_crop_rows(field_cfg, crop_type):
+                """Generate crop row geometry using instanced cylinders/cones."""
+                row_spacing = field_cfg["row_spacing_m"]
+                field_size = field_cfg["size_m"]
+                plant_height = field_cfg["plant_height_m"]
+                density = field_cfg["plant_density"]
+                angle_rad = math.radians(field_cfg["row_angle_deg"])
+
+                # Create a prototype crop plant
+                if crop_type == "corn":
+                    proto_path = "/World/Prototypes/CornPlant"
+                    prim_utils.create_prim(proto_path, "Cylinder",
+                        attributes={{
+                            "radius": 0.03,
+                            "height": plant_height,
+                            "xformOp:translate": Gf.Vec3f(0, 0, plant_height / 2),
+                        }})
+                    # Green material
+                    mtl = "/World/Looks/CornMaterial"
+                    omni.kit.commands.execute("CreateMdlMaterialPrim",
+                        mtl_url="OmniPBR.mdl", mtl_name="OmniPBR", mtl_path=mtl)
+                    omni.kit.commands.execute("BindMaterial",
+                        prim_path=proto_path, material_path=mtl)
+                    shade = UsdShade.Material(world.stage.GetPrimAtPath(mtl))
+                    shader = shade.GetSurfaceOutput().GetConnectedSource()[0]
+                    shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(
+                        Gf.Vec3f(0.15, 0.45, 0.12)
+                    )
+                else:
+                    proto_path = "/World/Prototypes/SoybeanPlant"
+                    prim_utils.create_prim(proto_path, "Sphere",
+                        attributes={{
+                            "radius": plant_height * 0.3,
+                            "xformOp:translate": Gf.Vec3f(0, 0, plant_height * 0.3),
+                        }})
+                    mtl = "/World/Looks/SoybeanMaterial"
+                    omni.kit.commands.execute("CreateMdlMaterialPrim",
+                        mtl_url="OmniPBR.mdl", mtl_name="OmniPBR", mtl_path=mtl)
+                    omni.kit.commands.execute("BindMaterial",
+                        prim_path=proto_path, material_path=mtl)
+                    shade = UsdShade.Material(world.stage.GetPrimAtPath(mtl))
+                    shader = shade.GetSurfaceOutput().GetConnectedSource()[0]
+                    shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(
+                        Gf.Vec3f(0.12, 0.50, 0.15)
+                    )
+
+                # Instance plants along rows
+                scope = prim_utils.create_prim("/World/CropField", "Scope")
+                plant_id = 0
+                half = field_size / 2
+                y = -half
+                while y < half:
+                    x = -half
+                    while x < half:
+                        if np.random.random() < density:
+                            # Rotate point by row angle
+                            rx = x * math.cos(angle_rad) - y * math.sin(angle_rad)
+                            ry = x * math.sin(angle_rad) + y * math.cos(angle_rad)
+                            jitter_x = np.random.uniform(-0.05, 0.05)
+                            jitter_y = np.random.uniform(-0.05, 0.05)
+                            prim_utils.create_prim(
+                                f"/World/CropField/Plant_{{plant_id}}",
+                                "Xform",
+                                attributes={{
+                                    "xformOp:translate": Gf.Vec3f(rx + jitter_x, ry + jitter_y, 0),
+                                    "xformOp:scale": Gf.Vec3f(1, 1, np.random.uniform(0.8, 1.2)),
+                                }},
+                                # Reference the prototype
+                            )
+                            plant_id += 1
+                        x += 0.3  # plant spacing within row
+                    y += row_spacing
+
+                print(f"  Created {{plant_id}} crop plants")
+
+            def create_disease_patches(diseases):
+                """Apply disease material overrides to field regions."""
+                for i, patch in enumerate(diseases):
+                    mat_data = patch["material"]
+                    mtl_path = f"/World/Looks/Disease_{{i}}"
+                    omni.kit.commands.execute("CreateMdlMaterialPrim",
+                        mtl_url="OmniPBR.mdl", mtl_name="OmniPBR", mtl_path=mtl_path)
+                    shade = UsdShade.Material(world.stage.GetPrimAtPath(mtl_path))
+                    shader = shade.GetSurfaceOutput().GetConnectedSource()[0]
+                    bc = mat_data["base_color"]
+                    shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(
+                        Gf.Vec3f(bc[0], bc[1], bc[2])
+                    )
+                    shader.CreateInput("reflection_roughness_constant",
+                        Sdf.ValueTypeNames.Float).Set(mat_data["roughness"])
+                    shader.CreateInput("metallic_constant",
+                        Sdf.ValueTypeNames.Float).Set(mat_data["metallic"])
+
+                    # Create visible disease marker prims at patch locations
+                    for j in range(patch["num_instances"]):
+                        angle = np.random.uniform(0, 2 * math.pi)
+                        r = np.random.uniform(0, patch["radius_m"])
+                        px = patch["center_x"] + r * math.cos(angle)
+                        py = patch["center_y"] + r * math.sin(angle)
+                        sz = np.random.uniform(0.2, 1.0)
+
+                        prim_path = f"/World/Diseases/Patch_{{i}}_{{j}}"
+                        prim_utils.create_prim(prim_path, "Cylinder",
+                            attributes={{
+                                "radius": sz,
+                                "height": 0.02,
+                                "xformOp:translate": Gf.Vec3f(px, py, 0.01),
+                            }})
+                        omni.kit.commands.execute("BindMaterial",
+                            prim_path=prim_path, material_path=mtl_path)
+
+            def setup_lighting(params):
+                """Configure sun + sky dome lighting."""
+                # Distant light (sun)
+                sun = UsdLux.DistantLight.Define(world.stage, "/World/Sun")
+                sun.CreateIntensityAttr(params["intensity"])
+                sun.CreateColorTemperatureAttr(params["color_temp"])
+                sun.CreateEnableColorTemperatureAttr(True)
+                # Set sun direction via rotation
+                xform = UsdGeom.Xformable(sun.GetPrim())
+                xform.ClearXformOpOrder()
+                xform.AddRotateXYZOp().Set(Gf.Vec3f(
+                    -params["sun_elevation"],
+                    params["sun_azimuth"],
+                    0,
+                ))
+
+                # Dome light (sky)
+                dome = UsdLux.DomeLight.Define(world.stage, "/World/Sky")
+                dome.CreateIntensityAttr(200)
+                sky = params.get("sky_color", [0.5, 0.6, 0.9])
+                dome.CreateColorAttr(Gf.Vec3f(sky[0], sky[1], sky[2]))
+
+            def setup_camera(cam_params, resolution):
+                """Create and position the drone camera."""
+                cam_path = "/World/DroneCamera"
+                camera = UsdGeom.Camera.Define(world.stage, cam_path)
+                camera.CreateFocalLengthAttr(24.0)  # mm — wide angle
+                camera.CreateHorizontalApertureAttr(36.0)
+
+                xform = UsdGeom.Xformable(camera.GetPrim())
+                xform.ClearXformOpOrder()
+                xform.AddTranslateOp().Set(Gf.Vec3d(
+                    cam_params["x"], cam_params["y"], cam_params["z"]
+                ))
+                # Point camera downward (nadir) with slight variation
+                xform.AddRotateXYZOp().Set(Gf.Vec3f(
+                    -90 + cam_params.get("pitch", 0),
+                    cam_params.get("yaw", 0),
+                    0,
+                ))
+
+                return cam_path
+
+            def render_frame(cam_path, scene_idx, resolution):
+                """Render one frame and save outputs."""
+                w, h = resolution
+
+                # Setup Replicator render product
+                rp = rep.create.render_product(cam_path, (w, h))
+
+                # RGB writer
+                rgb_writer = rep.WriterRegistry.get("BasicWriter")
+                rgb_writer.initialize(
+                    output_dir=os.path.join(SHARED_DIR, "renders"),
+                    rgb=True,
+                )
+                rgb_writer.attach([rp])
+
+                # Depth writer
+                depth_writer = rep.WriterRegistry.get("BasicWriter")
+                depth_writer.initialize(
+                    output_dir=os.path.join(SHARED_DIR, "depth"),
+                    distance_to_camera=True,
+                )
+                depth_writer.attach([rp])
+
+                # Segmentation writer
+                seg_writer = rep.WriterRegistry.get("BasicWriter")
+                seg_writer.initialize(
+                    output_dir=os.path.join(SHARED_DIR, "segmentation"),
+                    semantic_segmentation=True,
+                )
+                seg_writer.attach([rp])
+
+                # Trigger render
+                rep.orchestrator.step()
+
+                print(f"  Rendered scene {{scene_idx}}")
+
+            # ── Main batch loop ─────────────────────────────────────
+            print(f"AGRI-FORGE Isaac Sim batch: {{len(SCENES)}} scenes")
+
+            for scene in SCENES:
+                idx = scene["scene_idx"]
+                print(f"\\nScene {{idx}}:")
+
+                # Clear stage for new scene
+                world.clear()
+
+                # Build scene
+                create_ground_plane(scene["field"]["size_m"])
+                create_crop_rows(scene["field"], scene["crop_type"])
+                create_disease_patches(scene["diseases"])
+                setup_lighting(scene["lighting_params"])
+                cam_path = setup_camera(scene["camera"], scene["resolution"])
+
+                # Step physics once to settle
+                world.reset()
+                world.step(render=False)
+
+                # Render
+                render_frame(cam_path, idx, scene["resolution"])
+
+            # Cleanup
+            simulation_app.close()
+            print("\\nBatch render complete.")
+        ''')
+
+        return script
+
+    # ── Reachability ──────────────────────────────────────────────
+    def _check_isaac_available(self) -> bool:
+        """Check whether Isaac Sim is reachable and report status.
+
+        Performs a filesystem reachability check first (fast), then an
+        optional health check of the Isaac Python environment.  Results
+        are cached for the lifetime of this generator instance so we
+        only pay the cost once per run.
+        """
+        if hasattr(self, "_isaac_available"):
+            return self._isaac_available
+
+        print("[IsaacGen] Checking Isaac Sim availability...")
+
+        if not self.bridge.is_reachable():
+            print("[IsaacGen] Isaac Sim is NOT reachable from WSL")
+            self._isaac_available = False
+            return False
+
+        version = self.bridge.get_version()
+        if version:
+            print(f"[IsaacGen] Isaac Sim version: {version}")
+
+        # Run a lightweight health check (python.bat -c "print(...)")
+        if self.bridge.health_check(timeout=30):
+            print("[IsaacGen] Isaac Sim health check PASSED")
+            self._isaac_available = True
+        else:
+            print("[IsaacGen] Isaac Sim health check FAILED — will use "
+                  "procedural fallback")
+            self._isaac_available = False
+
+        return self._isaac_available
+
+    # ── Batch generation ────────────────────────────────────────────
+    def generate(self, num_images: int = 10, headless: bool = True) -> None:
+        """Generate photorealistic dataset via Isaac Sim.
+
+        Args:
+            num_images: Total images to generate.
+            headless: Run Isaac without GUI (for overnight batches).
+        """
+        self.bridge.headless = headless
+        total_batches = math.ceil(num_images / self.scenes_per_batch)
+
+        print(f"[IsaacGen] Generating {num_images} images in {total_batches} batches")
+        print(f"[IsaacGen] Resolution: {self.resolution}")
+        print(f"[IsaacGen] Headless: {headless}")
+        print(f"[IsaacGen] Altitude range: {self.altitude_range}m")
+        print(f"[IsaacGen] Crops: {self.crop_types}")
+
+        # ── Upfront reachability check ──────────────────────────────
+        isaac_available = self._check_isaac_available()
+        if not isaac_available:
+            print("[IsaacGen] Isaac Sim unavailable — entire run will use "
+                  "procedural fallback")
+
+        # Setup shared directory (needed even for metadata paths)
+        shared = self.bridge.setup_shared_dir()
+
+        # VRAM safety check
+        usage = self.vram_guard.get_usage()
+        if usage["total_gb"] > 0:
+            print(f"[IsaacGen] GPU VRAM: {usage['used_gb']}/{usage['total_gb']} GB used")
+
+        all_metadata = []
+        global_idx = 0
+
+        for batch_num in range(total_batches):
+            batch_size = min(self.scenes_per_batch, num_images - global_idx)
+            print(f"\n[IsaacGen] === Batch {batch_num + 1}/{total_batches} "
+                  f"({batch_size} scenes) ===")
+
+            # Generate scene parameters for this batch
+            scenes = []
+            for i in range(batch_size):
+                scene = self._random_scene_params(global_idx + i)
+                scenes.append(scene)
+
+            if not isaac_available:
+                # Skip straight to procedural fallback
+                print("[IsaacGen] Using procedural fallback (Isaac unavailable)")
+                self._procedural_fallback(scenes, global_idx)
+            else:
+                # VRAM check before each batch
+                if not self.vram_guard.check(required_gb=3.0):
+                    print("[IsaacGen] VRAM low — waiting for availability...")
+                    if not self.vram_guard.wait_until_available(3.0, timeout_s=60):
+                        print("[IsaacGen] WARNING: Proceeding with low VRAM")
+
+                # Clean shared dir from previous batch
+                self.bridge.clean_shared_dir()
+
+                # Generate and write the render script
+                shared_dir_win = self.bridge.shared_dir_win
+                script_content = self._generate_render_script(scenes, shared_dir_win)
+
+                script_path = shared / "usd_scenes" / f"batch_{batch_num:03d}.py"
+                script_path.write_text(script_content)
+                print(f"[IsaacGen] Script: {script_path.name}")
+
+                # Execute via Isaac Sim
+                t0 = time.perf_counter()
+                rc, output = self.bridge.run_script(
+                    str(script_path),
+                    timeout=max(300, batch_size * 30),
+                )
+                elapsed = time.perf_counter() - t0
+
+                if rc != 0:
+                    print(f"[IsaacGen] Batch {batch_num + 1} render failed (rc={rc})")
+                    print(f"[IsaacGen] Output: {output[:500]}")
+                    # Fall back to procedural generation for this batch
+                    print("[IsaacGen] Falling back to procedural generation...")
+                    self._procedural_fallback(scenes, global_idx)
+                else:
+                    print(f"[IsaacGen] Batch rendered in {elapsed:.1f}s")
+                    # Collect renders from shared directory
+                    counts = self.bridge.collect_renders(self.output_dir)
+                    print(f"[IsaacGen] Collected: {counts}")
+                    # If Isaac ran but produced no RGB files, fall back
+                    if counts["rgb"] == 0:
+                        print("[IsaacGen] No RGB frames collected — "
+                              "falling back to procedural generation")
+                        self._procedural_fallback(scenes, global_idx)
+
+            # Generate YOLO labels + metadata, copy to full_res/ + train/
+            for scene in scenes:
+                idx = scene["scene_idx"]
+                boxes = self._compute_yolo_boxes(scene)
+                img_name = f"isaac_{idx:05d}.png"
+
+                # Write YOLO label to both output_dir/labels and train/labels
+                label_name = f"isaac_{idx:05d}.txt"
+                label_path = self.output_dir / "labels" / label_name
+                with open(label_path, "w") as f:
+                    for box in boxes:
+                        f.write(f"{box['class_idx']} {box['cx']:.6f} "
+                                f"{box['cy']:.6f} {box['bw']:.6f} {box['bh']:.6f}\n")
+                shutil.copy2(label_path, self.train_dir / "labels" / label_name)
+
+                # Copy rendered image to full_res/ and downscale to train/
+                src_img = self.output_dir / "images" / img_name
+                if src_img.exists():
+                    shutil.copy2(src_img, self.full_res_dir / img_name)
+                    from PIL import Image as PILImage
+                    img = PILImage.open(src_img)
+                    train_img = img.resize(self.inference_resolution, PILImage.LANCZOS)
+                    train_img.save(self.train_dir / "images" / img_name)
+
+                # Save scene metadata
+                meta = {
+                    "image": img_name,
+                    "scene_params": scene,
+                    "num_annotations": len(boxes),
+                    "boxes": boxes,
+                    "render_engine": "isaac_sim",
+                }
+                all_metadata.append(meta)
+
+            global_idx += batch_size
+
+        # ── Write dataset files ─────────────────────────────────────
+        # dataset.yaml for YOLOv8 (points at train/ subdirectory)
+        dataset_yaml = {
+            "path": str(self.train_dir.resolve()),
+            "train": "images",
+            "val": "images",
+            "nc": len(self.disease_classes),
+            "names": self.disease_classes,
+        }
+        with open(self.output_dir / "dataset.yaml", "w") as f:
+            yaml.dump(dataset_yaml, f, default_flow_style=False)
+
+        # Full metadata
+        with open(self.output_dir / "metadata.json", "w") as f:
+            json.dump(all_metadata, f, indent=2)
+
+        # Summary
+        class_counts = {}
+        total_boxes = 0
+        for m in all_metadata:
+            total_boxes += m["num_annotations"]
+            for d_patch in m["scene_params"]["diseases"]:
+                d = d_patch["disease"]
+                class_counts[d] = class_counts.get(d, 0) + 1
+
+        print(f"\n{'='*60}")
+        print(f" ISAAC SIM DATASET COMPLETE")
+        print(f"{'='*60}")
+        print(f" Images:      {num_images}")
+        print(f" Annotations: {total_boxes}")
+        print(f" Output:      {self.output_dir.resolve()}")
+        print(f" Classes:")
+        for cls, cnt in sorted(class_counts.items()):
+            print(f"   {cls}: {cnt}")
+        print(f"{'='*60}")
+
+    # ── Procedural fallback ─────────────────────────────────────────
+    def _procedural_fallback(self, scenes: list[dict], start_idx: int) -> None:
+        """Generate procedural images when Isaac Sim is unavailable.
+
+        Uses the existing SyntheticGenerator logic as a graceful degradation.
+        Saves to both full_res/ and train/ (downscaled) directories.
+        """
+        from data.synthetic_generator import SyntheticGenerator
+
+        print("[IsaacGen] Using procedural fallback (Cosmos + PIL)")
+        gen = SyntheticGenerator(self.cfg)
+
+        for i, scene in enumerate(scenes):
+            idx = scene["scene_idx"]
+            img = gen._generate_base_field_fast()
+
+            for patch in scene["diseases"]:
+                gen._overlay_anomaly(img, patch["disease"])
+
+            img = gen._apply_augmentation(img)
+
+            img_name = f"isaac_{idx:05d}.png"
+            # Save to images/ (collected by generate()), full_res/, and train/
+            img_path = self.output_dir / "images" / img_name
+            img.save(img_path)
+            img.save(self.full_res_dir / img_name)
+            from PIL import Image as PILImage
+            train_img = img.resize(self.inference_resolution, PILImage.LANCZOS)
+            train_img.save(self.train_dir / "images" / img_name)

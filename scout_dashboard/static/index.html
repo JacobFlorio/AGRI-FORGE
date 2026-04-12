@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Scout Dashboard — Florio Industries</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --navy: #1B365D;
+    --accent: #2E75B6;
+    --green: #27AE60;
+    --yellow: #F39C12;
+    --red: #E74C3C;
+    --bg: #0F1419;
+    --card: #1A2332;
+    --text: #E8ECF1;
+    --muted: #8899AA;
+    --border: #2A3A4A;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  /* ── Top Bar ── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--card);
+    border-bottom: 2px solid var(--accent);
+    height: 48px;
+    z-index: 1000;
+  }
+  .topbar .brand {
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--accent);
+    letter-spacing: 0.5px;
+  }
+  .topbar .brand span { color: var(--muted); font-weight: 400; }
+  .topbar .status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s infinite;
+  }
+  .status-dot.offline { background: var(--red); animation: none; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ── Layout ── */
+  .main {
+    display: flex;
+    height: calc(100vh - 48px);
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    width: 340px;
+    min-width: 340px;
+    background: var(--card);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sidebar-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-header h2 {
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .mission-select {
+    width: 100%;
+    padding: 8px 10px;
+    margin-top: 8px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .stats-row {
+    display: flex;
+    gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .stat-card {
+    flex: 1;
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 8px 10px;
+    text-align: center;
+  }
+  .stat-card .num {
+    font-size: 22px;
+    font-weight: 700;
+  }
+  .stat-card .label {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .stat-card.high .num { color: var(--red); }
+  .stat-card.med .num { color: var(--yellow); }
+  .stat-card.low .num { color: var(--green); }
+
+  /* ── Filter Bar ── */
+  .filter-bar {
+    display: flex;
+    gap: 6px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .filter-btn {
+    flex: 1;
+    padding: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .filter-btn:hover { border-color: var(--accent); color: var(--text); }
+  .filter-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .filter-btn.active.sev-high { background: var(--red); border-color: var(--red); }
+  .filter-btn.active.sev-med { background: var(--yellow); border-color: var(--yellow); color: #222; }
+  .filter-btn.active.sev-low { background: var(--green); border-color: var(--green); }
+
+  /* ── Detection List ── */
+  .detection-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .detection-list::-webkit-scrollbar { width: 4px; }
+  .detection-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .det-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+    border-left: 3px solid transparent;
+  }
+  .det-card:hover { border-color: var(--accent); }
+  .det-card.selected { border-color: var(--accent); background: rgba(46,117,182,0.1); }
+  .det-card.sev-high { border-left-color: var(--red); }
+  .det-card.sev-medium { border-left-color: var(--yellow); }
+  .det-card.sev-low { border-left-color: var(--green); }
+
+  .det-card .det-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .det-card .det-class {
+    font-weight: 600;
+    font-size: 13px;
+    text-transform: capitalize;
+  }
+  .det-card .det-conf {
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .det-card .det-reasoning {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.4;
+    margin-top: 4px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .det-card .det-time {
+    font-size: 10px;
+    color: var(--border);
+    margin-top: 4px;
+  }
+
+  /* ── Map ── */
+  .map-container {
+    flex: 1;
+    position: relative;
+  }
+  #map { width: 100%; height: 100%; }
+
+  /* ── Detail Panel (overlays map) ── */
+  .detail-panel {
+    display: none;
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 360px;
+    max-height: calc(100% - 24px);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    z-index: 800;
+    overflow-y: auto;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .detail-panel.open { display: block; }
+
+  .detail-close {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 20px;
+    cursor: pointer;
+    z-index: 10;
+  }
+  .detail-close:hover { color: var(--text); }
+
+  .detail-img {
+    width: 100%;
+    border-radius: 10px 10px 0 0;
+    display: block;
+  }
+
+  .detail-body { padding: 14px; }
+  .detail-body h3 {
+    font-size: 16px;
+    margin-bottom: 4px;
+    text-transform: capitalize;
+  }
+  .detail-body .severity-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .severity-badge.high { background: var(--red); color: white; }
+  .severity-badge.medium { background: var(--yellow); color: #222; }
+  .severity-badge.low { background: var(--green); color: white; }
+
+  .detail-reasoning {
+    margin-top: 10px;
+    padding: 10px;
+    background: var(--bg);
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text);
+  }
+  .detail-reasoning .label {
+    font-size: 10px;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 4px;
+  }
+
+  .detail-meta {
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  /* ── Farmer Verification Buttons ── */
+  .verify-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .verify-btn {
+    flex: 1;
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .verify-btn:hover { border-color: var(--accent); }
+  .verify-btn.confirm { border-color: var(--green); color: var(--green); }
+  .verify-btn.confirm:hover { background: var(--green); color: white; }
+  .verify-btn.reject { border-color: var(--red); color: var(--red); }
+  .verify-btn.reject:hover { background: var(--red); color: white; }
+  .verify-btn.verified { opacity: 0.5; pointer-events: none; }
+
+  .relabel-input {
+    width: 100%;
+    padding: 8px 10px;
+    margin-top: 8px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+  }
+  .relabel-input::placeholder { color: var(--border); }
+
+  /* ── Mobile Responsive ── */
+  @media (max-width: 768px) {
+    .sidebar { display: none; }
+    .detail-panel { width: calc(100% - 24px); }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">FLORIO INDUSTRIES <span>Scout Dashboard</span></div>
+  <div class="status">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Connecting...</span>
+  </div>
+</div>
+
+<div class="main">
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <h2>Mission</h2>
+      <select class="mission-select" id="missionSelect">
+        <option value="all">All Missions</option>
+      </select>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-card high">
+        <div class="num" id="statHigh">0</div>
+        <div class="label">High</div>
+      </div>
+      <div class="stat-card med">
+        <div class="num" id="statMed">0</div>
+        <div class="label">Medium</div>
+      </div>
+      <div class="stat-card low">
+        <div class="num" id="statLow">0</div>
+        <div class="label">Low</div>
+      </div>
+    </div>
+
+    <div class="filter-bar">
+      <button class="filter-btn active" data-filter="all" onclick="setFilter('all', this)">All</button>
+      <button class="filter-btn sev-high" data-filter="high" onclick="setFilter('high', this)">High</button>
+      <button class="filter-btn sev-med" data-filter="medium" onclick="setFilter('medium', this)">Med</button>
+      <button class="filter-btn sev-low" data-filter="low" onclick="setFilter('low', this)">Low</button>
+    </div>
+
+    <div class="detection-list" id="detectionList"></div>
+  </div>
+
+  <div class="map-container">
+    <div id="map"></div>
+
+    <div class="detail-panel" id="detailPanel">
+      <button class="detail-close" onclick="closeDetail()">&times;</button>
+      <img class="detail-img" id="detailImg" src="" alt="Detection">
+      <div class="detail-body">
+        <h3 id="detailClass">—</h3>
+        <span class="severity-badge" id="detailSeverity">—</span>
+        <span id="detailConf" style="font-size:12px; color:var(--muted); margin-left:8px;"></span>
+
+        <div class="detail-reasoning">
+          <div class="label">AI Assessment</div>
+          <div id="detailReasoning">—</div>
+        </div>
+
+        <div class="detail-meta" id="detailMeta"></div>
+
+        <div class="verify-row">
+          <button class="verify-btn confirm" id="btnConfirm" onclick="verifyDetection(true)">
+            &#10003; Confirm
+          </button>
+          <button class="verify-btn reject" id="btnReject" onclick="verifyDetection(false)">
+            &#10007; False Positive
+          </button>
+        </div>
+        <input type="text" class="relabel-input" id="relabelInput"
+               placeholder="Correct label (e.g., gray_leaf_spot, nitrogen_deficiency)">
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── STATE ─────────────────────────────────────────────────────
+let map, markersLayer;
+let allDetections = [];
+let currentFilter = "all";
+let selectedDetection = null;
+const API = window.location.origin;  // Dashboard served from Jetson itself
+
+// Severity → color mapping for map markers
+const SEV_COLORS = {
+  high: "#E74C3C",
+  medium: "#F39C12",
+  low: "#27AE60",
+  unknown: "#8899AA",
+};
+
+// ─── MAP INIT ──────────────────────────────────────────────────
+function initMap() {
+  map = L.map("map", {
+    center: [40.58, -83.13],  // Marion, Ohio — adjust to your default area
+    zoom: 14,
+    zoomControl: true,
+  });
+
+  // OpenStreetMap tiles — works when Jetson has internet for initial cache.
+  // For fully offline: pre-download tiles or use a local tile server.
+  // See: https://github.com/nicholaskarlson/leaflet-tilelayer-mbtiles
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "OSM",
+    maxZoom: 19,
+  }).addTo(map);
+
+  // Fallback: if no internet, the map still works — just no basemap tiles.
+  // Detections will render as markers over a gray background.
+  // For the demo video, you can screenshot satellite imagery and
+  // load it as a custom image overlay instead:
+  //
+  // L.imageOverlay("field_satellite.jpg", [[lat1,lon1],[lat2,lon2]]).addTo(map);
+
+  markersLayer = L.layerGroup().addTo(map);
+}
+
+// ─── DATA LOADING ──────────────────────────────────────────────
+async function checkStatus() {
+  try {
+    const res = await fetch(`${API}/api/status`);
+    const data = await res.json();
+    document.getElementById("statusDot").className = "status-dot";
+    document.getElementById("statusText").textContent =
+      `Edge-native — ${data.total_detections} detections`;
+  } catch {
+    document.getElementById("statusDot").className = "status-dot offline";
+    document.getElementById("statusText").textContent = "Offline";
+  }
+}
+
+async function loadMissions() {
+  try {
+    const res = await fetch(`${API}/api/missions`);
+    const missions = await res.json();
+    const select = document.getElementById("missionSelect");
+    missions.forEach((m) => {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      const date = new Date(m.start_time).toLocaleDateString();
+      opt.textContent = `${date} — ${m.total_detections} detections`;
+      select.appendChild(opt);
+    });
+  } catch (e) {
+    console.error("Failed to load missions:", e);
+  }
+}
+
+async function loadDetections(missionId) {
+  try {
+    let url = `${API}/api/detections?limit=500`;
+    if (missionId && missionId !== "all") {
+      url += `&mission_id=${missionId}`;
+    }
+    const res = await fetch(url);
+    const geojson = await res.json();
+    allDetections = geojson.features || [];
+    renderAll();
+  } catch (e) {
+    console.error("Failed to load detections:", e);
+  }
+}
+
+// ─── RENDERING ─────────────────────────────────────────────────
+function renderAll() {
+  const filtered =
+    currentFilter === "all"
+      ? allDetections
+      : allDetections.filter((f) => f.properties.severity === currentFilter);
+
+  renderStats(filtered);
+  renderList(filtered);
+  renderMap(filtered);
+}
+
+function renderStats(features) {
+  const counts = { high: 0, medium: 0, low: 0 };
+  features.forEach((f) => {
+    const sev = f.properties.severity || "low";
+    if (counts[sev] !== undefined) counts[sev]++;
+  });
+  document.getElementById("statHigh").textContent = counts.high;
+  document.getElementById("statMed").textContent = counts.medium;
+  document.getElementById("statLow").textContent = counts.low;
+}
+
+function renderList(features) {
+  const list = document.getElementById("detectionList");
+  list.innerHTML = "";
+
+  features.forEach((f) => {
+    const p = f.properties;
+    const card = document.createElement("div");
+    card.className = `det-card sev-${p.severity || "low"}`;
+    card.onclick = () => selectDetection(f);
+
+    const time = new Date(p.timestamp).toLocaleString();
+    const reasoning = p.vlm_reasoning
+      ? p.vlm_reasoning.substring(0, 120) + (p.vlm_reasoning.length > 120 ? "..." : "")
+      : "No AI assessment available";
+
+    card.innerHTML = `
+      <div class="det-header">
+        <span class="det-class">${p.class}</span>
+        <span class="det-conf">${(p.confidence * 100).toFixed(0)}%</span>
+      </div>
+      <div class="det-reasoning">${reasoning}</div>
+      <div class="det-time">${time}</div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+function renderMap(features) {
+  markersLayer.clearLayers();
+
+  const bounds = [];
+
+  features.forEach((f) => {
+    const [lon, lat] = f.geometry.coordinates;
+    if (!lat || !lon) return;
+
+    const p = f.properties;
+    const color = SEV_COLORS[p.severity] || SEV_COLORS.unknown;
+
+    const marker = L.circleMarker([lat, lon], {
+      radius: p.is_bolo_match ? 10 : 7,
+      fillColor: color,
+      color: "#fff",
+      weight: p.is_bolo_match ? 2 : 1,
+      fillOpacity: 0.85,
+    });
+
+    marker.on("click", () => selectDetection(f));
+
+    // Tooltip on hover
+    marker.bindTooltip(
+      `<b>${p.class}</b><br>${(p.confidence * 100).toFixed(0)}% confidence`,
+      { direction: "top", offset: [0, -8] }
+    );
+
+    marker.addTo(markersLayer);
+    bounds.push([lat, lon]);
+  });
+
+  // Fit map to show all detections
+  if (bounds.length > 0) {
+    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+  }
+}
+
+// ─── DETAIL PANEL ──────────────────────────────────────────────
+function selectDetection(feature) {
+  selectedDetection = feature;
+  const p = feature.properties;
+  const [lon, lat] = feature.geometry.coordinates;
+
+  // Image
+  const img = document.getElementById("detailImg");
+  if (p.image_url) {
+    img.src = p.image_url;
+    img.style.display = "block";
+  } else {
+    img.style.display = "none";
+  }
+
+  // Details
+  document.getElementById("detailClass").textContent = p.class;
+  const badge = document.getElementById("detailSeverity");
+  badge.textContent = p.severity || "unknown";
+  badge.className = `severity-badge ${p.severity || ""}`;
+  document.getElementById("detailConf").textContent =
+    `${(p.confidence * 100).toFixed(1)}% confidence`;
+
+  document.getElementById("detailReasoning").textContent =
+    p.vlm_reasoning || "No AI assessment recorded for this detection.";
+
+  document.getElementById("detailMeta").innerHTML = `
+    <b>GPS:</b> ${lat.toFixed(6)}, ${lon.toFixed(6)}<br>
+    <b>Time:</b> ${new Date(p.timestamp).toLocaleString()}<br>
+    <b>Mission:</b> ${p.mission_id}<br>
+    ${p.is_bolo_match ? "<b style='color:var(--red)'>BOLO MATCH</b><br>" : ""}
+  `;
+
+  // Verification state
+  const confirmBtn = document.getElementById("btnConfirm");
+  const rejectBtn = document.getElementById("btnReject");
+  if (p.farmer_verified === 1) {
+    confirmBtn.classList.add("verified");
+    confirmBtn.textContent = "Confirmed";
+    rejectBtn.classList.remove("verified");
+  } else if (p.farmer_verified === -1) {
+    rejectBtn.classList.add("verified");
+    rejectBtn.textContent = "Rejected";
+    confirmBtn.classList.remove("verified");
+  } else {
+    confirmBtn.classList.remove("verified");
+    rejectBtn.classList.remove("verified");
+    confirmBtn.textContent = "\u2713 Confirm";
+    rejectBtn.textContent = "\u2717 False Positive";
+  }
+
+  document.getElementById("relabelInput").value = p.farmer_label || "";
+
+  // Open panel and center map
+  document.getElementById("detailPanel").classList.add("open");
+  if (lat && lon) map.setView([lat, lon], Math.max(map.getZoom(), 16));
+
+  // Highlight in sidebar
+  document.querySelectorAll(".det-card").forEach((c) => c.classList.remove("selected"));
+  // Find matching card
+  const cards = document.querySelectorAll(".det-card");
+  const idx = allDetections.findIndex((d) => d.properties.id === p.id);
+  if (idx >= 0 && cards[idx]) cards[idx].classList.add("selected");
+}
+
+function closeDetail() {
+  document.getElementById("detailPanel").classList.remove("open");
+  selectedDetection = null;
+}
+
+// ─── FARMER VERIFICATION ───────────────────────────────────────
+async function verifyDetection(confirmed) {
+  if (!selectedDetection) return;
+  const id = selectedDetection.properties.id;
+  const correctedLabel = document.getElementById("relabelInput").value.trim();
+
+  try {
+    await fetch(`${API}/api/detections/${id}/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        verified: confirmed,
+        corrected_label: correctedLabel || null,
+        notes: null,
+      }),
+    });
+
+    // Update local state
+    selectedDetection.properties.farmer_verified = confirmed ? 1 : -1;
+    if (correctedLabel) selectedDetection.properties.farmer_label = correctedLabel;
+
+    // Refresh detail panel
+    selectDetection(selectedDetection);
+  } catch (e) {
+    console.error("Verification failed:", e);
+  }
+}
+
+// ─── FILTERS ───────────────────────────────────────────────────
+function setFilter(severity, btn) {
+  currentFilter = severity;
+  document.querySelectorAll(".filter-btn").forEach((b) => b.classList.remove("active"));
+  btn.classList.add("active");
+  renderAll();
+}
+
+// ─── MISSION SELECT ────────────────────────────────────────────
+document.getElementById("missionSelect").addEventListener("change", (e) => {
+  loadDetections(e.target.value);
+});
+
+// ─── INIT ──────────────────────────────────────────────────────
+initMap();
+checkStatus();
+loadMissions();
+loadDetections("all");
+
+// Refresh status every 10 seconds (useful during live flight)
+setInterval(checkStatus, 10000);
+// Refresh detections every 30 seconds during active mission
+setInterval(() => {
+  const missionId = document.getElementById("missionSelect").value;
+  loadDetections(missionId);
+}, 30000);
+</script>
+</body>
+</html>
