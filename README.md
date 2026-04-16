@@ -112,7 +112,7 @@ AGRI-FORGE is neither. It's the forge — the machinery for generating training 
 
 ## Status
 
-Active R&D, grant-funded. The data factory and training pipeline are the most mature pieces. The `firmament-ag/` perception nodes are a public mirror of what runs in Firmament-Private — the architecture is stable; the public copy has received less shake-out than the private production path. Expect rough edges. This is a research repo, not a product.
+Active R&D, self-funded independent project. The data factory and training pipeline are the most mature pieces. The `firmament-ag/` perception nodes are a public mirror of what runs in Firmament-Private — the architecture is stable; the public copy has received less shake-out than the private production path. Expect rough edges. This is a research repo, not a product.
 
 If you want to play with the data pipeline or study the perception architecture, clone away. If you want to fly an autonomous drone, talk to me first — there's a reason the flight stack is private.
 
