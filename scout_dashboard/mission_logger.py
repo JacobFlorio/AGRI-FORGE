@@ -9,7 +9,7 @@ It only subscribes — never publishes or modifies existing topics.
 
 Integration:
   - Subscribes to your existing detection topic (adjust DETECTION_TOPIC)
-  - Subscribes to your existing alert/BOLO topic (adjust ALERT_TOPIC)
+  - Subscribes to your existing alert topic (adjust ALERT_TOPIC)
   - Saves detection frames to disk as JPEGs
   - Writes all metadata to SQLite for the local dashboard
 
@@ -248,9 +248,9 @@ class MissionLogger(Node):
 
     def _on_alert(self, msg: String):
         """
-        Handle BOLO match / high-severity alert from your alert system.
+        Handle high-severity alert from your alert system.
         This updates an existing detection record with VLM reasoning
-        and marks it as a BOLO match, OR creates a new record if
+        and marks it as an alert match, OR creates a new record if
         the alert includes its own detection data.
         """
         try:

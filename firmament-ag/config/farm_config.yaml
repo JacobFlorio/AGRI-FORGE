@@ -175,7 +175,7 @@ environmental:
     storm_drop_hpa: 5              # hPa drop in 1 hour = storm incoming
 
 # ── VLM Prompt Templates (Cosmos Reason 2) ──────────────────────
-# These replace the security-focused prompts with ag-specific ones.
+# Agricultural perception prompts for Cosmos Reason 2.
 vlm:
   system_prompt: |
     You are an agricultural crop health analyst examining aerial drone imagery

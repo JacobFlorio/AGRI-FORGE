@@ -1,17 +1,16 @@
 """
 Florio Industries — Agricultural Perception Node
 ==================================================
-REPLACES the security-focused BOLO matcher for the ag branch.
-Same pipeline position, completely different logic.
+Agricultural perception node for crop health analysis.
 
-Pipeline position (unchanged upstream):
+Pipeline position:
   SIYI A8 → RTSP → image_publisher → YOLOv8 → temporal_engine → [THIS NODE]
 
-What this node does differently from the security branch:
+What this node does:
   - Receives detections and classifies them as CROP HEALTH issues
-  - Scores detections against agricultural threat classes (disease, pest, nutrient, etc.)
-  - Triggers Cosmos Reason 2 with AG-SPECIFIC prompts (not security prompts)
-  - Generates zone-aware scouting reports (not BOLO alerts)
+  - Scores detections against agricultural classes (disease, pest, nutrient, etc.)
+  - Triggers Cosmos Reason 2 with ag-specific prompts
+  - Generates zone-aware scouting reports
   - Correlates detections with environmental sensor data (humidity, temp)
   - Tracks persistent anomalies across flights for trend analysis
 
@@ -337,7 +336,7 @@ class AgPerception(Node):
     def _on_detection(self, msg):
         """
         Process agricultural detection from YOLOv8.
-        This is the core ag logic — replaces the security BOLO matcher.
+        Core agricultural perception logic.
         """
         try:
             data = json.loads(msg.data)

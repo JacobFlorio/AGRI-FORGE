@@ -1,21 +1,21 @@
 # Firmament — Agricultural Branch
 ## Edge-Native Autonomous Crop Scouting Platform
 
-### Branch Difference: Security → Agriculture
+### Key Capabilities
 
-| Feature | Security Branch (main) | Agricultural Branch (ag) |
-|---------|----------------------|--------------------------|
-| Detection targets | People, vehicles, threats | Disease, pests, nutrient stress, weeds |
-| Core logic | BOLO matching, loitering | Crop health scoring, zone analysis |
-| VLM prompts | Security assessment | Agronomic assessment + action plan |
-| Mission pattern | Patrol perimeter | Lawnmower grid (photogrammetry-ready) |
-| User dispatches | Alert response | "Scan NW Quarter of North Field" |
-| Environmental | Not used | BME280: humidity, temp, pressure → fungal risk |
-| Output | Evidence + alerts | Scouting reports + health scores + maps |
-| Persistence tracking | Loitering pattern | Disease progression across flights |
-| Data flywheel | Not present | Farmer verify → retrain → improve |
-| 3D/Mapping | Not present | Photogrammetry → orthomosaic + digital twin |
-| Dashboard focus | Security monitoring | Crop health + zone dispatch + environmental |
+| Feature | Description |
+|---------|-------------|
+| Detection targets | Disease, pests, nutrient stress, weeds |
+| Core logic | Crop health scoring, zone analysis |
+| VLM prompts | Agronomic assessment + action plan |
+| Mission pattern | Lawnmower grid (photogrammetry-ready) |
+| User dispatches | "Scan NW Quarter of North Field" |
+| Environmental | BME280: humidity, temp, pressure → fungal risk |
+| Output | Scouting reports + health scores + maps |
+| Persistence tracking | Disease progression across flights |
+| Data flywheel | Farmer verify → retrain → improve |
+| 3D/Mapping | Photogrammetry → orthomosaic + digital twin |
+| Dashboard focus | Crop health + zone dispatch + environmental |
 
 ### System Architecture
 
@@ -26,7 +26,7 @@ ON THE DRONE (Jetson Orin Nano)
 │   ├── YOLOv8-nano (retrained on ag classes)
 │   └── Temporal reasoning engine
 │
-├── NEW: AG PERCEPTION NODE (replaces BOLO)
+├── AG PERCEPTION NODE
 │   ├── Classifies detections as crop health issues
 │   ├── Locates detection in field/zone via GPS + farm config
 │   ├── Correlates with environmental data (humidity → fungal risk)
@@ -82,7 +82,7 @@ firmament-ag/
 │   └── farm_config.yaml          # Field boundaries, zones, crop types, thresholds
 │
 ├── nodes/
-│   ├── ag_perception.py          # Crop health analysis (replaces BOLO)
+│   ├── ag_perception.py          # Crop health analysis
 │   ├── environmental_sensor.py   # BME280 microclimate mapping
 │   └── zone_mission_planner.py   # Dispatchable zone scanning
 │

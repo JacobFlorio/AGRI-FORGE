@@ -4,7 +4,7 @@ Florio Industries — Zone Mission Planner
 Generates autonomous waypoint missions for farmer-selected field zones.
 The farmer says "scan NW Quarter" and this node generates the flight plan.
 
-This replaces the security patrol pattern with agricultural grid scanning:
+Agricultural grid scanning patterns:
   - Lawnmower pattern optimized for image overlap (photogrammetry)
   - Altitude adjusted for crop type and growth stage
   - Speed optimized for detection FPS vs coverage tradeoff

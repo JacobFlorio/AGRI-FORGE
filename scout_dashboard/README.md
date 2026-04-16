@@ -20,7 +20,7 @@
 │                      Cosmos Reason 2                     │
 │                              │                           │
 │                              ▼                           │
-│                        BOLO Matcher                      │
+│                      Alert Matcher                       │
 │                              │                           │
 │                              ▼                           │
 │                     Evidence Recorder                    │
